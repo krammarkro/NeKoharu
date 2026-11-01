@@ -485,6 +485,9 @@
     "pipeline": {
       "description": "Escolha os modelos e opções usados para processar cada página.",
       "modelLabel": "Modelo de {{stage}}",
+      "models": {
+        "ppOcrV5Cyrillic": "PP-OCRv5 (russo/cirílico)"
+      },
       "options": {
         "bubbleThreshold": "Limite de balão",
         "negativePrompt": "Prompt negativo",

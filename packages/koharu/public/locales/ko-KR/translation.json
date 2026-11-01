@@ -485,6 +485,9 @@
     "pipeline": {
       "description": "각 페이지 처리에 사용할 모델과 옵션을 선택합니다.",
       "modelLabel": "{{stage}} 모델",
+      "models": {
+        "ppOcrV5Cyrillic": "PP-OCRv5 (러시아어/키릴 문자)"
+      },
       "options": {
         "bubbleThreshold": "말풍선 임곗값",
         "negativePrompt": "네거티브 프롬프트",

@@ -61,6 +61,7 @@ impl Serialize for PipelineConfig {
         };
         let ocr = match &self.ocr {
             OcrModel::PaddleOcrVl1_6 => "paddleocr-vl-1.6",
+            OcrModel::PpOcrV5Cyrillic => "pp-ocrv5-cyrillic",
             OcrModel::MangaOcr => "manga-ocr",
             OcrModel::BaberuOcr => "baberu-ocr",
             OcrModel::HayaiOcr => "hayai-ocr",
@@ -123,6 +124,7 @@ impl<'de> Deserialize<'de> for PipelineConfig {
         };
         let ocr = match file.ocr.model.as_str() {
             "paddleocr-vl-1.6" => OcrModel::PaddleOcrVl1_6,
+            "pp-ocrv5-cyrillic" => OcrModel::PpOcrV5Cyrillic,
             "manga-ocr" => OcrModel::MangaOcr,
             "baberu-ocr" => OcrModel::BaberuOcr,
             "hayai-ocr" => OcrModel::HayaiOcr,
@@ -244,6 +246,7 @@ impl PipelineConfig {
         if !matches!(
             self.ocr,
             OcrModel::PaddleOcrVl1_6
+                | OcrModel::PpOcrV5Cyrillic
                 | OcrModel::MangaOcr
                 | OcrModel::BaberuOcr
                 | OcrModel::HayaiOcr
@@ -277,6 +280,8 @@ pub enum DetectionModel {
 pub enum OcrModel {
     #[serde(rename = "paddleocr-vl-1.6")]
     PaddleOcrVl1_6,
+    #[serde(rename = "pp-ocrv5-cyrillic")]
+    PpOcrV5Cyrillic,
     #[serde(rename = "manga-ocr")]
     MangaOcr,
     #[serde(rename = "baberu-ocr")]
@@ -344,6 +349,37 @@ mod tests {
             Ok(InpaintingModel::RoremMixed(config))
                 if config.prompt == "Remove the lettering."
                     && config.negative_prompt == "letters, words"
+        ));
+    }
+
+    #[test]
+    fn parses_and_serializes_dedicated_cyrillic_ocr_selection() {
+        let legacy_config: PipelineConfig = toml::from_str(
+            r#"
+                [ocr]
+                model = "paddleocr-vl-1.6"
+            "#,
+        )
+        .unwrap();
+        let config: PipelineConfig = toml::from_str(
+            r#"
+                [ocr]
+                model = "pp-ocrv5-cyrillic"
+            "#,
+        )
+        .unwrap();
+
+        assert!(matches!(legacy_config.ocr, OcrModel::PaddleOcrVl1_6));
+        assert!(matches!(config.ocr, OcrModel::PpOcrV5Cyrillic));
+        assert!(matches!(
+            PipelineConfig::default().ocr,
+            OcrModel::PaddleOcrVl1_6
+        ));
+        let serialized = toml::to_string(&config).unwrap();
+        assert!(serialized.contains("model = \"pp-ocrv5-cyrillic\""));
+        assert!(matches!(
+            toml::from_str::<PipelineConfig>(&serialized).unwrap().ocr,
+            OcrModel::PpOcrV5Cyrillic
         ));
     }
 

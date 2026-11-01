@@ -485,6 +485,9 @@
     "pipeline": {
       "description": "Her sayfayı işlemek için kullanılan modelleri ve seçenekleri seçin.",
       "modelLabel": "{{stage}} modeli",
+      "models": {
+        "ppOcrV5Cyrillic": "PP-OCRv5 (Rusça/Kiril)"
+      },
       "options": {
         "bubbleThreshold": "Konuşma balonu eşiği",
         "negativePrompt": "Negatif istem",

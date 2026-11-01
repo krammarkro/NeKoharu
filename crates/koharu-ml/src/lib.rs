@@ -22,6 +22,8 @@ pub mod manga_text_mask;
 pub mod paddle_ocr_vl;
 pub mod paddle_ocr_vl_quantized;
 pub mod pp_doclayout_v3;
+mod pp_lcnet_v3;
+pub mod pp_ocr_v5_cyrillic;
 pub mod pp_ocr_v6;
 pub mod rorem_mixed;
 pub mod speech_bubble_yolo11n;

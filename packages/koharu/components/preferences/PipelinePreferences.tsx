@@ -43,6 +43,8 @@ export function PipelinePreferences({
   onChange: (value: PipelineConfig) => void
 }) {
   const { t } = useTranslation()
+  const modelLabel = (name: ModelName) =>
+    name === 'pp-ocrv5-cyrillic' ? t('settings.pipeline.models.ppOcrV5Cyrillic') : modelNames[name]
   return (
     <PreferencePage
       title={t('settings.pipeline.title')}
@@ -65,7 +67,7 @@ export function PipelinePreferences({
                   <Select
                     value={model.model}
                     items={Object.fromEntries(
-                      modelOptions[stage].map((name) => [name, modelNames[name]]),
+                      modelOptions[stage].map((name) => [name, modelLabel(name)]),
                     )}
                     onValueChange={(name) => {
                       if (name) {
@@ -82,7 +84,7 @@ export function PipelinePreferences({
                     <SelectContent>
                       {modelOptions[stage].map((name) => (
                         <SelectItem key={name} value={name}>
-                          {modelNames[name]}
+                          {modelLabel(name)}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -163,6 +165,7 @@ function ModelOptions({
         </div>
       )
     case 'paddleocr-vl-1.6':
+    case 'pp-ocrv5-cyrillic':
     case 'manga-ocr':
     case 'baberu-ocr':
     case 'hayai-ocr':

@@ -485,6 +485,9 @@
     "pipeline": {
       "description": "اختر النماذج والخيارات المستخدمة لمعالجة كل صفحة.",
       "modelLabel": "نموذج {{stage}}",
+      "models": {
+        "ppOcrV5Cyrillic": "PP-OCRv5 (الروسية/السيريلية)"
+      },
       "options": {
         "bubbleThreshold": "عتبة الفقاعات",
         "negativePrompt": "الطلب السلبي",

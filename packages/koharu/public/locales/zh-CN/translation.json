@@ -485,6 +485,9 @@
     "pipeline": {
       "description": "选择用于处理每个页面的模型和选项。",
       "modelLabel": "{{stage}}模型",
+      "models": {
+        "ppOcrV5Cyrillic": "PP-OCRv5（俄语/西里尔字母）"
+      },
       "options": {
         "bubbleThreshold": "气泡阈值",
         "negativePrompt": "负面提示词",

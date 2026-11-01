@@ -485,6 +485,9 @@
     "pipeline": {
       "description": "Выберите модели и параметры обработки каждой страницы.",
       "modelLabel": "Модель «{{stage}}»",
+      "models": {
+        "ppOcrV5Cyrillic": "PP-OCRv5 (русский/кириллица)"
+      },
       "options": {
         "bubbleThreshold": "Порог пузыря",
         "negativePrompt": "Негативный промпт",

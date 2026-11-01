@@ -8,6 +8,7 @@ use image::DynamicImage;
 use koharu_ml::{
     baberu_ocr::BaberuOcr, hayai_ocr::HayaiOcr, manga_ocr::MangaOcr,
     paddle_ocr_vl::PaddleOCRVLTask, paddle_ocr_vl_quantized::PaddleOCRVLQuantized,
+    pp_ocr_v5_cyrillic::PPOCRv5Cyrillic,
 };
 use koharu_scene::{
     Authored, EntityId, Geometry, LanguageTag, OcrAnalysis, Origin, RecognizedFrom, Region,
@@ -40,6 +41,7 @@ impl StageProcessor for Processor {
             OcrModel::BaberuOcr => "baberu-ocr",
             OcrModel::HayaiOcr => "hayai-ocr",
             OcrModel::PaddleOcrVl1_6 => "paddleocr-vl-1.6",
+            OcrModel::PpOcrV5Cyrillic => "pp-ocrv5-cyrillic",
         }
     }
 
@@ -69,6 +71,7 @@ enum Model {
     Baberu(Arc<Mutex<BaberuOcr>>),
     Hayai(Arc<Mutex<HayaiOcr>>),
     Paddle(Arc<Mutex<PaddleOCRVLQuantized>>),
+    PpOcrV5Cyrillic(Arc<Mutex<PPOCRv5Cyrillic>>),
 }
 
 impl Model {
@@ -86,6 +89,9 @@ impl Model {
             OcrModel::PaddleOcrVl1_6 => Ok(Self::Paddle(Arc::new(Mutex::new(
                 PaddleOCRVLQuantized::load(device).await?,
             )))),
+            OcrModel::PpOcrV5Cyrillic => Ok(Self::PpOcrV5Cyrillic(Arc::new(Mutex::new(
+                PPOCRv5Cyrillic::load(device).await?,
+            )))),
         }
     }
 
@@ -95,6 +101,7 @@ impl Model {
             Self::Baberu(_) => "baberu-ocr",
             Self::Hayai(_) => "hayai-ocr",
             Self::Paddle(_) => "paddleocr-vl-1.6",
+            Self::PpOcrV5Cyrillic(_) => "pp-ocrv5-cyrillic",
         };
         let page = input.page;
         let mut targets = Vec::new();
@@ -165,9 +172,19 @@ impl Model {
                 })
                 .await?
             }
+            Self::PpOcrV5Cyrillic(model) => {
+                infer_text(model.clone(), targets, |model, image| {
+                    Ok(model.inference(image)?.text)
+                })
+                .await?
+            }
         };
 
         let generation = generation(PRODUCER, model_name)?;
+        let fallback_language = match self {
+            Self::PpOcrV5Cyrillic(_) => "ru-RU",
+            _ => "ja-JP",
+        };
         let mut edit = input.scene.edit_as(generation.clone());
         edit.observe_assets(page)?;
         for result in &results {
@@ -179,7 +196,7 @@ impl Model {
             let language = result
                 .previous
                 .and_then(|value| value.language)
-                .or_else(|| LanguageTag::new("ja-JP").ok());
+                .or_else(|| LanguageTag::new(fallback_language).ok());
             edit.set(
                 result.content,
                 &SourceText {

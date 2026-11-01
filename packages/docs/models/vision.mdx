@@ -14,16 +14,23 @@ Text, bubble, and panel thresholds control how much evidence each class needs. L
 
 ## OCR
 
-| Processor        | Use                                               |
-| ---------------- | ------------------------------------------------- |
-| PaddleOCR-VL 1.6 | Default general vision-language OCR               |
-| Manga OCR        | Japanese manga text                               |
-| Baberu OCR       | Alternative manga-oriented recognition            |
-| Hayai OCR        | Chinese, Korean, Japanese, and English manga text |
+| Processor                   | Use                                               |
+| --------------------------- | ------------------------------------------------- |
+| PaddleOCR-VL 1.6            | Default general vision-language OCR               |
+| PP-OCRv5 (Russian/Cyrillic) | Dedicated East-Slavic text recognition            |
+| Manga OCR                   | Japanese manga text                               |
+| Baberu OCR                  | Alternative manga-oriented recognition            |
+| Hayai OCR                   | Chinese, Korean, Japanese, and English manga text |
 
 <Note>
   OCR reads detected text regions. Check detection first when text is missing: changing the
-  recognizer cannot recover a region that was never passed to it.
+  recognizer cannot recover a region that was never passed to it. The Russian option uses the
+  dedicated [PP-OCRv5 East-Slavic mobile
+  recognizer](https://huggingface.co/PaddlePaddle/eslav_PP-OCRv5_mobile_rec_safetensors/tree/feb3757f69257ed5320044604217032a7b90b789),
+  whose vocabulary includes Russian, Belarusian, and Ukrainian Cyrillic characters. The checkpoint
+  is Apache-2.0 and runs through Koharu's existing LibTorch runtime; no Paddle Inference or ONNX
+  Runtime installation is needed on Windows. The model downloads on first use. This is not a
+  manga-specific accuracy guarantee, so compare representative pages before relying on its output.
 </Note>
 
 ## Inpainting
