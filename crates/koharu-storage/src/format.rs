@@ -13,13 +13,27 @@ const VERSION: u32 = 1;
 const HEADER_BYTES: usize = 8 + 4 + 8 + 32;
 const MAX_STATE_BYTES: usize = 512 * 1024 * 1024;
 
+/// One serialized project state: the scene payload, the revision it belongs
+/// to, and the complete blob closure the payload references. The encoding is
+/// checksummed, so it doubles as the transport format for copying a project
+/// between machines.
 #[revisioned(revision = 1)]
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct StoredState {
-    pub(crate) document: DocumentId,
-    pub(crate) revision: Revision,
-    pub(crate) blobs: Vec<BlobId>,
-    pub(crate) payload: Vec<u8>,
+pub struct StoredState {
+    pub document: DocumentId,
+    pub revision: Revision,
+    pub blobs: Vec<BlobId>,
+    pub payload: Vec<u8>,
+}
+
+/// Serializes a project state for storage or transport.
+pub fn encode_state(state: &StoredState) -> Result<Vec<u8>> {
+    encode(state)
+}
+
+/// Reads a state produced by [`encode_state`], verifying its checksum.
+pub fn decode_state(encoded: &[u8]) -> Result<StoredState> {
+    decode(encoded)
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

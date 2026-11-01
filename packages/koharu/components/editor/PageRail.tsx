@@ -3,7 +3,9 @@
 import { useQuery } from '@tanstack/react-query'
 import { observeElementRect, useVirtualizer } from '@tanstack/react-virtual'
 import {
+  Columns2,
   FilePlus2,
+  Flag,
   FolderOpen,
   LoaderCircle,
   MoreHorizontal,
@@ -11,11 +13,14 @@ import {
   Settings,
   Trash2,
 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { ResourceMonitor } from '@/components/editor/ResourceMonitor'
+import { MemberAvatar, memberName } from '@/components/editor/SessionBar'
 import { call } from '@/lib/backend'
+import { useForkPreferences } from '@/lib/forkPreferences'
+import { activatePage, cancelPageActivation } from '@/lib/navigation'
 import {
   pageKey,
   pagesKey,
@@ -28,14 +33,14 @@ import {
   usePages,
 } from '@/lib/queries'
 import { useKoharuStore } from '@/lib/store'
-import { prefetchCanvasPages, showCanvasPage } from '@koharu/bridge/canvas'
+import { prefetchCanvasPages } from '@koharu/bridge/canvas'
 import {
   commands,
   type CanvasPagePreparation,
-  type Page,
   type PageImportSource,
   type PageSummary,
   type ProjectInfo,
+  type SessionMember,
 } from '@koharu/bridge/protocol'
 import { Button } from '@koharu/ui/components/button'
 import {
@@ -59,6 +64,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@koharu/ui/components/t
 import { cn } from '@koharu/ui/lib/utils'
 
 const emptyPages: PageSummary[] = []
+/** Avatars a rail entry shows before folding the rest into a count. */
+const MAX_PAGE_MEMBERS = 3
 
 interface IntentPrefetchState {
   project: string
@@ -66,19 +73,39 @@ interface IntentPrefetchState {
   pages: Set<string>
 }
 
+type DropPosition = 'before' | 'after'
+
 export function PageRail() {
   const { t } = useTranslation()
   const pages = usePages().data ?? emptyPages
   const active = usePage().data?.id ?? null
   const selected = useKoharuStore((state) => state.selectedPages)
+  const members = useKoharuStore((state) => state.session.members)
+  // Where everyone else in the session is; this instance's own page is the
+  // active one already.
+  const membersByPage = useMemo(() => {
+    const byPage = new Map<string, SessionMember[]>()
+    for (const member of members) {
+      if (member.you || !member.page) continue
+      byPage.set(member.page, [...(byPage.get(member.page) ?? []), member])
+    }
+    return byPage
+  }, [members])
   const selectPages = useKoharuStore((state) => state.selectPages)
   const selectLayers = useKoharuStore((state) => state.selectLayers)
   const setSettingsOpen = useKoharuStore((state) => state.setSettingsOpen)
+  const mergeDeleteOriginals = useForkPreferences((state) => state.preferences.mergeDeleteOriginals)
   const { importPages, importing } = useImportPages()
   const anchor = useRef<number | null>(null)
-  const selectionRequest = useRef(0)
   const intentPrefetch = useRef<IntentPrefetchState | null>(null)
+  const keyboardPageIndex = useRef<number | null>(null)
+  const draggedPage = useRef<string | null>(null)
+  const dropTargetRef = useRef<{ page: string; position: DropPosition } | null>(null)
+  const dropHandled = useRef(false)
   const [dragged, setDragged] = useState<string | null>(null)
+  const [dropTarget, setDropTarget] = useState<{ page: string; position: DropPosition } | null>(
+    null,
+  )
   const [query, setQuery] = useState('')
   const [renaming, setRenaming] = useState<PageSummary | null>(null)
   const [renameValue, setRenameValue] = useState('')
@@ -105,64 +132,93 @@ export function PageRail() {
       ),
   })
 
-  useEffect(
-    () => () => {
-      selectionRequest.current += 1
+  // A project reopens at the page it was left on, so that page is centered
+  // once; later switches, such as a search result, scroll the rail only when
+  // the page is off screen.
+  const revealedActive = useRef<string | null>(null)
+  useEffect(() => {
+    if (!active || revealedActive.current === active) return
+    const index = visiblePages.findIndex(({ page }) => page.id === active)
+    if (index < 0) return
+    pageVirtualizer.scrollToIndex(index, {
+      align: revealedActive.current === null ? 'center' : 'auto',
+    })
+    revealedActive.current = active
+  }, [active, pageVirtualizer, visiblePages])
+
+  useEffect(() => cancelPageActivation, [])
+
+  const select = useCallback(
+    (index: number, additive: boolean, range: boolean) => {
+      const page = pages[index]
+      if (!page) return
+      let next: string[]
+      if (range && anchor.current !== null) {
+        const start = Math.min(anchor.current, index)
+        const end = Math.max(anchor.current, index)
+        const rangeIds = pages.slice(start, end + 1).map((item) => item.id)
+        next = additive ? [...new Set([...selected, ...rangeIds])] : rangeIds
+      } else if (additive) {
+        next = selected.includes(page.id)
+          ? selected.filter((id) => id !== page.id)
+          : [...selected, page.id]
+        anchor.current = index
+      } else {
+        next = [page.id]
+        anchor.current = index
+      }
+      void activatePage(page.id, next)
     },
-    [],
+    [pages, selected],
   )
 
-  const select = (index: number, additive: boolean, range: boolean) => {
-    const page = pages[index]
-    if (!page) return
-    let next: string[]
-    if (range && anchor.current !== null) {
-      const start = Math.min(anchor.current, index)
-      const end = Math.max(anchor.current, index)
-      const rangeIds = pages.slice(start, end + 1).map((item) => item.id)
-      next = additive ? [...new Set([...selected, ...rangeIds])] : rangeIds
-    } else if (additive) {
-      next = selected.includes(page.id)
-        ? selected.filter((id) => id !== page.id)
-        : [...selected, page.id]
-      anchor.current = index
-    } else {
-      next = [page.id]
-      anchor.current = index
+  useEffect(() => {
+    keyboardPageIndex.current = pages.findIndex((page) => page.id === active)
+  }, [active, pages])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const { shortcuts } = useKoharuStore.getState()
+      const key = event.key.toLowerCase()
+      const step =
+        event.key === 'ArrowLeft' || event.key === 'PageUp' || key === shortcuts.previous_page
+          ? -1
+          : event.key === 'ArrowRight' || event.key === 'PageDown' || key === shortcuts.next_page
+            ? 1
+            : 0
+      if (
+        step === 0 ||
+        event.defaultPrevented ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey
+      )
+        return
+
+      const target = event.target
+      if (
+        target instanceof HTMLElement &&
+        (target.isContentEditable ||
+          target.closest(
+            'input, textarea, select, [role="dialog"], [role="menu"], [role="listbox"], [role="slider"]',
+          ))
+      )
+        return
+
+      const current = keyboardPageIndex.current ?? pages.findIndex((page) => page.id === active)
+      const next = current + step
+      if (current < 0 || !pages[next]) return
+
+      event.preventDefault()
+      keyboardPageIndex.current = next
+      pageVirtualizer.scrollToIndex(next, { align: 'auto' })
+      select(next, false, false)
     }
-    const previousProject = queryClient.getQueryData<ProjectInfo | null>(projectKey)
-    const previousPage = queryClient.getQueryData<Page | null>(pageKey)
-    const prepared = queryClient.getQueryData<CanvasPagePreparation>(preparedPageKey(page.id))
-    const activated = showCanvasPage(page.id, previousProject?.revision ?? null)
-    const request = ++selectionRequest.current
-    const synchronize = () => {
-      if (selectionRequest.current !== request) return
-      if (activated && previousProject && prepared?.revision === previousProject.revision) {
-        queryClient.setQueryData(projectKey, { ...previousProject, active_page: page.id })
-        queryClient.setQueryData(pageKey, prepared.page)
-      }
-      selectPages(next)
-      selectLayers([])
-      void call(commands.selectPage, page.id)
-        .then((selection) => {
-          if (selectionRequest.current !== request) return
-          queryClient.setQueryData(projectKey, selection.project)
-          queryClient.setQueryData(pageKey, selection.page)
-        })
-        .catch(() => {
-          if (selectionRequest.current !== request) return
-          if (queryClient.getQueryData<ProjectInfo | null>(projectKey)?.active_page === page.id) {
-            queryClient.setQueryData(projectKey, previousProject)
-            queryClient.setQueryData(pageKey, previousPage)
-          }
-        })
-    }
-    if (activated) {
-      requestAnimationFrame(() => window.setTimeout(synchronize, 0))
-    } else {
-      synchronize()
-    }
-  }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [active, pageVirtualizer, pages, select])
 
   const prefetchOnIntent = (page: string) => {
     const project = queryClient.getQueryData<ProjectInfo | null>(projectKey)
@@ -205,6 +261,22 @@ export function PageRail() {
       })
       .catch(() => undefined)
 
+  const mergePages = () => {
+    const ordered = pages
+      .filter((page) => selected.includes(page.id))
+      .map((page) => page.id)
+      // Sort by visual position (left-to-right in the rail) to ensure correct composition order.
+      .sort((a, b) => pages.findIndex((p) => p.id === a) - pages.findIndex((p) => p.id === b))
+    if (ordered.length < 2) return
+    void call(commands.mergePages, ordered, mergeDeleteOriginals)
+      .then((merged) => {
+        selectPages([merged])
+        selectLayers([])
+        return refresh(projectKey, pagesKey, pageKey)
+      })
+      .catch(() => undefined)
+  }
+
   const openRename = (page: PageSummary) => {
     setRenaming(page)
     setRenameValue(page.label)
@@ -227,6 +299,35 @@ export function PageRail() {
       .catch(() => undefined)
       .finally(closeRename)
   }
+
+  const setChapterStart = (page: PageSummary) =>
+    void call(commands.setPageChapterStart, page.id, !page.chapter_start)
+      .then(() => refresh(projectKey, pagesKey))
+      .catch(() => undefined)
+
+  const handleMovePage = useCallback(
+    (movingId: string | null, targetId: string | null, position: DropPosition | null) => {
+      if (!movingId || !targetId || !position || movingId === targetId) return
+      const movingIndex = pages.findIndex((item) => item.id === movingId)
+      const targetIndexInPages = pages.findIndex((item) => item.id === targetId)
+      if (movingIndex < 0 || targetIndexInPages < 0) return
+
+      const targetIndex = targetIndexInPages - (movingIndex < targetIndexInPages ? 1 : 0)
+      const destination = targetIndex + (position === 'after' ? 1 : 0)
+      void call(commands.movePage, movingId, destination)
+        .finally(() => refresh(projectKey, pagesKey))
+        .catch(() => undefined)
+    },
+    [pages],
+  )
+
+  const cleanupDrag = useCallback(() => {
+    draggedPage.current = null
+    dropTargetRef.current = null
+    dropHandled.current = false
+    setDragged(null)
+    setDropTarget(null)
+  }, [])
 
   return (
     <>
@@ -286,7 +387,38 @@ export function PageRail() {
             viewportClassName='px-1.5 py-1.5'
             viewportRef={pageList}
           >
-            <div className='relative w-full' style={{ height: pageVirtualizer.getTotalSize() }}>
+            <div
+              className='relative w-full'
+              style={{ height: pageVirtualizer.getTotalSize() }}
+              onDragOver={(event) => {
+                if (draggedPage.current && event.target === event.currentTarget) {
+                  event.preventDefault()
+                  event.dataTransfer.dropEffect = 'move'
+                  const lastPage = visiblePages[visiblePages.length - 1]?.page
+                  if (lastPage && lastPage.id !== draggedPage.current) {
+                    dropTargetRef.current = { page: lastPage.id, position: 'after' }
+                    setDropTarget({ page: lastPage.id, position: 'after' })
+                  }
+                }
+              }}
+              onDrop={(event) => {
+                if (
+                  event.target === event.currentTarget &&
+                  !dropHandled.current &&
+                  dropTargetRef.current &&
+                  draggedPage.current
+                ) {
+                  event.preventDefault()
+                  dropHandled.current = true
+                  handleMovePage(
+                    draggedPage.current,
+                    dropTargetRef.current.page,
+                    dropTargetRef.current.position,
+                  )
+                  cleanupDrag()
+                }
+              }}
+            >
               {pageVirtualizer.getVirtualItems().map((virtualRow) => {
                 const item = visiblePages[virtualRow.index]
                 if (!item) return null
@@ -300,22 +432,52 @@ export function PageRail() {
                   >
                     <PageItem
                       page={page}
+                      index={index}
                       active={active === page.id}
                       selected={selected.includes(page.id)}
+                      members={membersByPage.get(page.id)}
                       dragged={dragged === page.id}
+                      isDragging={dragged !== null}
+                      dropPosition={dropTarget?.page === page.id ? dropTarget.position : null}
                       onIntent={active === page.id ? undefined : () => prefetchOnIntent(page.id)}
                       onSelect={(additive, range) => select(index, additive, range)}
-                      onDragStart={() => setDragged(page.id)}
-                      onDragEnd={() => setDragged(null)}
+                      onDragStart={(event: DragEvent<HTMLElement>) => {
+                        draggedPage.current = page.id
+                        dropTargetRef.current = null
+                        dropHandled.current = false
+                        event.dataTransfer.effectAllowed = 'move'
+                        event.dataTransfer.setData('text/plain', page.id)
+                        setDragged(page.id)
+                      }}
+                      onDragEnd={() => {
+                        if (!dropHandled.current && draggedPage.current && dropTargetRef.current) {
+                          dropHandled.current = true
+                          handleMovePage(
+                            draggedPage.current,
+                            dropTargetRef.current.page,
+                            dropTargetRef.current.position,
+                          )
+                        }
+                        cleanupDrag()
+                      }}
+                      onDragOver={(position) => {
+                        if (draggedPage.current && draggedPage.current !== page.id) {
+                          dropTargetRef.current = { page: page.id, position }
+                          setDropTarget({ page: page.id, position })
+                        }
+                      }}
                       onRename={() => openRename(page)}
                       onDelete={() => deletePage(page.id)}
-                      onDrop={() => {
-                        if (dragged && dragged !== page.id) {
-                          void call(commands.movePage, dragged, index)
-                            .then(() => refresh(projectKey, pagesKey))
-                            .catch(() => undefined)
+                      onToggleChapterStart={() => setChapterStart(page)}
+                      canMerge={selected.length > 1}
+                      onMerge={mergePages}
+                      onDrop={(position, dataTransfer) => {
+                        const moving = draggedPage.current ?? dataTransfer.getData('text/plain')
+                        if (!dropHandled.current && moving && moving !== page.id) {
+                          dropHandled.current = true
+                          handleMovePage(moving, page.id, position)
                         }
-                        setDragged(null)
+                        cleanupDrag()
                       }}
                     />
                   </div>
@@ -443,44 +605,66 @@ function PageImportMenu({
 
 function PageItem({
   page,
+  index,
   active,
   selected,
+  members,
   dragged,
+  dropPosition,
+  isDragging,
   onIntent,
   onSelect,
   onDragStart,
   onDragEnd,
+  onDragOver,
   onRename,
   onDelete,
+  onToggleChapterStart,
+  onMerge,
+  canMerge,
   onDrop,
 }: {
   page: PageSummary
+  index: number
   active: boolean
   selected: boolean
+  members?: SessionMember[]
   dragged: boolean
+  dropPosition: DropPosition | null
+  isDragging?: boolean
   onIntent?: () => void
   onSelect: (additive: boolean, range: boolean) => void
-  onDragStart: () => void
+  onDragStart: (event: DragEvent<HTMLElement>) => void
   onDragEnd: () => void
+  onDragOver: (position: DropPosition) => void
   onRename: () => void
   onDelete: () => void
-  onDrop: () => void
+  onToggleChapterStart: () => void
+  onMerge: () => void
+  canMerge: boolean
+  onDrop: (position: DropPosition, dataTransfer: DataTransfer) => void
 }) {
   const { t } = useTranslation()
+  const showPageNumbers = useForkPreferences((state) => state.preferences.showPageNumbers)
 
   return (
     <article
       draggable
       data-active={active}
       data-selected={selected}
+      data-chapter-start={page.chapter_start}
       className={cn(
-        'group grid cursor-default grid-cols-[48px_minmax(0,1fr)] gap-2.5 rounded-xl p-1.5 transition-colors select-none',
+        'group relative grid cursor-grab grid-cols-[48px_minmax(0,1fr)] gap-2.5 rounded-xl p-1.5 transition-colors select-none active:cursor-grabbing',
         active
           ? 'bg-primary/[0.09] hover:bg-primary/[0.09]'
           : selected
             ? 'bg-foreground/[0.06] hover:bg-foreground/[0.08]'
             : 'hover:bg-foreground/[0.045]',
         dragged && 'opacity-50',
+        dropPosition === 'before' &&
+          'before:absolute before:inset-x-1 before:-top-px before:z-10 before:border-t-2 before:border-primary',
+        dropPosition === 'after' &&
+          'after:absolute after:inset-x-1 after:-bottom-px after:z-10 after:border-t-2 after:border-primary',
       )}
       onPointerEnter={onIntent}
       onFocus={onIntent}
@@ -491,22 +675,51 @@ function PageItem({
       onDoubleClick={onRename}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
-      onDragOver={(event) => event.preventDefault()}
+      onDragEnter={(event) => {
+        event.preventDefault()
+        event.dataTransfer.dropEffect = 'move'
+      }}
+      onDragOver={(event) => {
+        event.preventDefault()
+        event.dataTransfer.dropEffect = 'move'
+        const bounds = event.currentTarget.getBoundingClientRect()
+        onDragOver(event.clientY < bounds.top + bounds.height / 2 ? 'before' : 'after')
+      }}
       onDrop={(event) => {
         event.preventDefault()
-        onDrop()
+        const bounds = event.currentTarget.getBoundingClientRect()
+        const position = event.clientY < bounds.top + bounds.height / 2 ? 'before' : 'after'
+        onDrop(position, event.dataTransfer)
       }}
     >
-      <div className='grid h-16 w-12 place-items-center overflow-hidden rounded-lg bg-[var(--surface-well)]'>
+      <div
+        className={cn(
+          'relative grid h-16 w-12 place-items-center overflow-hidden rounded-lg bg-[var(--surface-well)]',
+          isDragging && 'pointer-events-none',
+        )}
+      >
         {page.source_asset ? (
           <PageThumbnail page={page.id} asset={page.source_asset} label={page.label} />
         ) : (
           <span className='text-[9px] text-muted-foreground'>{t('navigator.noImage')}</span>
         )}
+        {members && members.length > 0 && <PageMembers members={members} />}
       </div>
-      <div className='min-w-0 py-0.5'>
+      <div className={cn('min-w-0 py-0.5', isDragging && 'pointer-events-none')}>
         <div className='flex items-start gap-1'>
-          <span className='min-w-0 flex-1 truncate text-[10px] font-medium'>{page.label}</span>
+          <span className='flex min-w-0 flex-1 items-center gap-1 truncate text-[10px] font-medium'>
+            {page.chapter_start && (
+              <span
+                role='img'
+                aria-label={t('navigator.chapterStart')}
+                title={t('navigator.chapterStart')}
+                className='shrink-0 text-primary'
+              >
+                <Flag className='size-3' />
+              </span>
+            )}
+            <span className='truncate'>{page.label}</span>
+          </span>
           <DropdownMenu>
             <DropdownMenuTrigger
               render={
@@ -521,6 +734,17 @@ function PageItem({
               <MoreHorizontal />
             </DropdownMenuTrigger>
             <DropdownMenuContent align='end'>
+              <DropdownMenuItem disabled={!canMerge} onClick={onMerge}>
+                <Columns2 /> {t('navigator.mergeAsSpread')}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={onToggleChapterStart}>
+                <Flag />
+                {page.chapter_start
+                  ? t('navigator.removeChapterStart')
+                  : t('navigator.markChapterStart')}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
               <DropdownMenuItem onClick={onRename}>{t('navigator.rename')}</DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem variant='destructive' onClick={onDelete}>
@@ -529,7 +753,19 @@ function PageItem({
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
+        {/* Labels can be renamed to anything; this is the page's position. */}
         <p className='mt-1 text-[9px] leading-3.5 text-muted-foreground'>
+          {showPageNumbers && (
+            <>
+              <span
+                data-page-number={index + 1}
+                className='font-medium text-foreground tabular-nums'
+              >
+                {index + 1}
+              </span>
+              {' · '}
+            </>
+          )}
           {t('navigator.layerCount', { count: page.layer_count })}
         </p>
         <p className='mt-1 text-[9px] text-muted-foreground tabular-nums'>
@@ -537,6 +773,36 @@ function PageItem({
         </p>
       </div>
     </article>
+  )
+}
+
+/** The other session participants who have this page open. */
+function PageMembers({ members }: { members: SessionMember[] }) {
+  const { t } = useTranslation()
+  const label = t('session.onThisPage', {
+    names: members.map((member) => memberName(t, member)).join(', '),
+  })
+  const hidden = members.length - MAX_PAGE_MEMBERS
+  return (
+    <span
+      role='img'
+      aria-label={label}
+      title={label}
+      className='absolute right-0.5 bottom-0.5 flex -space-x-1'
+    >
+      {members.slice(0, MAX_PAGE_MEMBERS).map((member) => (
+        <MemberAvatar
+          key={member.peer}
+          member={member}
+          className='ring-1 ring-[var(--surface-well)]'
+        />
+      ))}
+      {hidden > 0 && (
+        <span className='grid size-4 place-items-center rounded-full bg-foreground text-[8px] leading-none font-semibold text-background ring-1 ring-[var(--surface-well)]'>
+          +{hidden}
+        </span>
+      )}
+    </span>
   )
 }
 

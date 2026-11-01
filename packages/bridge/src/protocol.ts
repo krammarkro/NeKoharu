@@ -12,7 +12,7 @@ export const commands = {
 	saveAgentConfig: (config: Config) => __TAURI_INVOKE<Config>("save_agent_config", { config }),
 	runAgent: (prompt: string, onEvent: Channel<Event>) => __TAURI_INVOKE<RunId>("run_agent", { prompt, onEvent }),
 	cancelAgent: (run: RunId) => __TAURI_INVOKE<null>("cancel_agent", { run }),
-	subscribe: (onCanvas: Channel<CanvasState>, onJob: Channel<Job>, onDownload: Channel<Download>, onResources: Channel<ModelResources>, onProject: Channel<ProjectInfo | null>) => __TAURI_INVOKE<StartupState>("subscribe", { onCanvas, onJob, onDownload, onResources, onProject }),
+	subscribe: (onCanvas: Channel<CanvasState>, onJob: Channel<Job>, onDownload: Channel<Download>, onResources: Channel<ModelResources>, onProject: Channel<ProjectInfo | null>, onSession: Channel<SessionInfo>) => __TAURI_INVOKE<StartupState>("subscribe", { onCanvas, onJob, onDownload, onResources, onProject, onSession }),
 	getProject: () => __TAURI_INVOKE<ProjectInfo | null>("get_project"),
 	getPages: () => __TAURI_INVOKE<PageSummary[]>("get_pages"),
 	getPage: () => __TAURI_INVOKE<Page | null>("get_page"),
@@ -24,20 +24,30 @@ export const commands = {
 	import: (source: PageImportSource) => __TAURI_INVOKE<null>("import", { source }),
 	selectPage: (page: EntityId) => __TAURI_INVOKE<PageSelection>("select_page", { page }),
 	renamePage: (page: EntityId, label: string) => __TAURI_INVOKE<null>("rename_page", { page, label }),
+	setPageChapterStart: (page: EntityId, chapterStart: boolean) => __TAURI_INVOKE<null>("set_page_chapter_start", { page, chapterStart }),
 	deletePages: (pages: EntityId[]) => __TAURI_INVOKE<null>("delete_pages", { pages }),
 	movePage: (page: EntityId, index: number) => __TAURI_INVOKE<null>("move_page", { page, index }),
+	mergePages: (pages: EntityId[], deleteOriginals: boolean) => __TAURI_INVOKE<EntityId>("merge_pages", { pages, deleteOriginals }),
 	setSourceText: (layer: EntityId, text: string) => __TAURI_INVOKE<null>("set_source_text", { layer, text }),
 	setTranslation: (layer: EntityId, text: string | null) => __TAURI_INVOKE<null>("set_translation", { layer, text }),
+	/**  The text layers whose translation contains `query`, in project order. */
+	findTranslations: (query: string, matchCase: boolean) => __TAURI_INVOKE<TranslationMatch[]>("find_translations", { query, matchCase }),
+	/**
+	 *  Replaces `query` in translations as one undo step, everywhere or only in
+	 *  `layers`, and returns how many occurrences were replaced.
+	 */
+	replaceTranslations: (query: string, replacement: string, matchCase: boolean, layers: EntityId[] | null) => __TAURI_INVOKE<number>("replace_translations", { query, replacement, matchCase, layers }),
 	setTypography: (updates: TypographyUpdate[]) => __TAURI_INVOKE<null>("set_typography", { updates }),
 	setGeometry: (updates: GeometryUpdate[]) => __TAURI_INVOKE<null>("set_geometry", { updates }),
 	setVisibility: (layers: EntityId[], visible: boolean | null, opacity: number | null) => __TAURI_INVOKE<null>("set_visibility", { layers, visible, opacity }),
 	deleteLayers: (layers: EntityId[]) => __TAURI_INVOKE<null>("delete_layers", { layers }),
 	moveLayer: (layer: EntityId, parent: EntityId, index: number) => __TAURI_INVOKE<Page>("move_layer", { layer, parent, index }),
+	pasteTextLayers: (layers: EntityId[], page: EntityId) => __TAURI_INVOKE<EntityId[]>("paste_text_layers", { layers, page }),
 	undo: () => __TAURI_INVOKE<null>("undo"),
 	redo: () => __TAURI_INVOKE<null>("redo"),
 	process: (scope: Scope, operation: Operation) => __TAURI_INVOKE<JobId>("process", { scope, operation }),
 	stopJob: (job: JobId) => __TAURI_INVOKE<null>("stop_job", { job }),
-	export: (format: ExportFormat) => __TAURI_INVOKE<null>("export", { format }),
+	export: (format: ExportFormat, selectedPages: EntityId[] | null) => __TAURI_INVOKE<null>("export", { format, selectedPages }),
 	getThumbnail: (page: EntityId) => __TAURI_INVOKE<ThumbnailBytes>("get_thumbnail", { page }),
 	getFonts: () => __TAURI_INVOKE<FontFamily[]>("get_fonts"),
 	getFontPreview: (familyName: string) => __TAURI_INVOKE<FontPreviewBytes>("get_font_preview", { familyName }),
@@ -51,10 +61,44 @@ export const commands = {
 	getCanvasPageResource: (page: EntityId, revision: Revision, resource: string) => __TAURI_INVOKE<CanvasBytes>("get_canvas_page_resource", { page, revision, resource }),
 	addPointText: (point: Point) => __TAURI_INVOKE<LayerCommit>("add_point_text", { point }),
 	addTextBox: (frame: Frame) => __TAURI_INVOKE<LayerCommit>("add_text_box", { frame }),
+	addOcrBox: (frame: Frame) => __TAURI_INVOKE<LayerCommit>("add_ocr_box", { frame }),
+	/**
+	 *  Reads and cleans the text inside a box the user drew. Detection runs on the
+	 *  box first, so each piece of lettering in it gets its own text layer and
+	 *  only the lettering is cleaned; a box it finds nothing in is read and
+	 *  cleaned whole.
+	 */
+	cleanOcrBox: (frame: Frame) => __TAURI_INVOKE<JobId>("clean_ocr_box", { frame }),
 	commitPaint: (expectedRevision: Revision, layer: EntityId | null, points: Point[], brush: PaintBrush) => __TAURI_INVOKE<LayerCommit>("commit_paint", { expectedRevision, layer, points, brush }),
 	commitErase: (expectedRevision: Revision, layer: EntityId, points: Point[], diameter: number) => __TAURI_INVOKE<LayerCommit>("commit_erase", { expectedRevision, layer, points, diameter }),
 	commitTransform: (expectedRevision: Revision, elements: TransformFrame[]) => __TAURI_INVOKE<Revision | null>("commit_transform", { expectedRevision, elements }),
 	commitInpaint: (expectedRevision: Revision, points: Point[], diameter: number) => __TAURI_INVOKE<JobId | null>("commit_inpaint", { expectedRevision, points, diameter }),
+	/**
+	 *  Starts sharing the open project: brings up a quick tunnel and hands back
+	 *  the link to give to other users.
+	 */
+	startSession: () => __TAURI_INVOKE<SessionInfo>("start_session"),
+	/**
+	 *  Stops sharing. The link stays reserved for the next share, and the project
+	 *  and its files are untouched.
+	 */
+	stopSession: () => __TAURI_INVOKE<null>("stop_session"),
+	/**
+	 *  Joins someone else's session. The local library is not touched: the project
+	 *  lives on the host and only its replica is held here. Joining while already
+	 *  joined is how a guest follows a host whose link changed: the current
+	 *  replica stays until the new link has delivered a project.
+	 */
+	joinSession: (link: string) => __TAURI_INVOKE<SessionInfo>("join_session", { link }),
+	/**  Leaves the joined session and closes the replica. */
+	leaveSession: () => __TAURI_INVOKE<null>("leave_session"),
+	/**  The name this instance goes by in sessions. */
+	getSessionName: () => __TAURI_INVOKE<string>("get_session_name"),
+	/**
+	 *  Renames this instance and tells a running session at once. A blank name
+	 *  is replaced by a generated one; the name in effect is returned.
+	 */
+	setSessionName: (name: string) => __TAURI_INVOKE<string>("set_session_name", { name }),
 };
 
 /* Types */
@@ -64,9 +108,21 @@ export type Account = {
 	plan: string | null,
 };
 
+export type AgentModel = {
+	id: string,
+	name: string,
+	reasoning: Reasoning[],
+};
+
+export type AgentProvider = {
+	provider: Provider,
+	name: string,
+};
+
 export type AgentStatus = {
 	account: Account | null,
-	models: CodexModel[],
+	providers: AgentProvider[],
+	models: AgentModel[],
 	config: Config,
 	running: RunId | null,
 };
@@ -78,6 +134,12 @@ export type AnalysisRegion = {
 	kind: string,
 	label: string | null,
 };
+
+/**
+ *  The service that drives the agent. A provider backend reuses the
+ *  Chat Completions endpoint and credential owned by `koharu-translator`.
+ */
+export type Backend = { type: "codex" } | { type: "provider"; provider: Provider };
 
 export type Bounds = {
 	x: number,
@@ -103,17 +165,13 @@ export type CanvasState = {
 	generation: number,
 	size: [number, number],
 	element_frames: TransformFrame[],
+	text_sizes: TextSize[],
 };
 
 export type ClaudeConfig = Record<string, never>;
 
-export type CodexModel = {
-	id: string,
-	name: string,
-	reasoning: Reasoning[],
-};
-
 export type Config = {
+	backend: Backend,
 	model: string | null,
 	reasoning: Reasoning,
 };
@@ -151,7 +209,7 @@ export type Download = {
 	error: string | null,
 };
 
-export type DownloadState = "running" | "finished" | "failed";
+export type DownloadState = "running" | "finished" | "cancelled" | "failed";
 
 export type EntityId = string;
 
@@ -352,6 +410,7 @@ export type PageSummary = {
 	label: string,
 	size: PageSize,
 	source_asset: string | null,
+	chapter_start: boolean,
 	layer_count: number,
 };
 
@@ -440,6 +499,33 @@ export type Scope = { scope: "project" } | { scope: "pages"; value: EntityId[] }
 	bounds: Bounds,
 } } | { scope: "entities"; value: EntityId[] };
 
+export type SessionInfo = {
+	/**  `None` when no session is running. */
+	role: SessionRole | null,
+	/**  The link to hand out, while hosting. */
+	link: string | null,
+	/**  False once the other side has gone away. */
+	online: boolean,
+	/**  Everyone in the session, the host first. Empty while offline. */
+	members: SessionMember[],
+};
+
+/**  One participant of the running session. */
+export type SessionMember = {
+	/**  Stable for as long as the participant stays connected. */
+	peer: number,
+	/**  The participant's own name for themselves; empty when unknown. */
+	name: string,
+	/**  The id of the page they have open. */
+	page: string | null,
+	host: boolean,
+	/**  True for this instance's own entry. */
+	you: boolean,
+};
+
+/**  What this instance is doing with other machines, sent to the frontend. */
+export type SessionRole = "hosting" | "joined";
+
 export type SourceText = {
 	text: string,
 	language: string | null,
@@ -453,6 +539,12 @@ export type StartupState = {
 	canvas: CanvasState,
 };
 
+export type StrokeJoin = "round" | "miter" | "bevel";
+
+export type StrokeMethod = "expansion" | "contour";
+
+export type StrokePosition = "outside" | "center" | "inside";
+
 export type TextAlignment = "Start" | "Center" | "End" | "Justify";
 
 export type TextContent = {
@@ -464,6 +556,12 @@ export type TextContent = {
 };
 
 export type TextLayoutKind = "point" | "paragraph";
+
+/**  The size a text layer was laid out at, including the result of auto-fit. */
+export type TextSize = {
+	element: EntityId,
+	font_size: number,
+};
 
 export type ThumbnailBytes = number[];
 
@@ -482,6 +580,20 @@ export type TranslationConfig = {
 	generation: GenerationConfig,
 	target_language: string,
 	instructions: string | null,
+	combine_pages?: boolean,
+	max_pages_per_request?: number,
+};
+
+/**  A text layer whose translation contains the searched text. */
+export type TranslationMatch = {
+	page: EntityId,
+	/**  The page's position in the project, from zero. */
+	page_index: number,
+	layer: EntityId,
+	/**  The layer's whole translation. */
+	text: string,
+	/**  How many times the searched text occurs in it. */
+	count: number,
 };
 
 export type TypesettingConfig = {
@@ -497,8 +609,14 @@ export type Typography = {
 	color: [number, number, number, number] | null,
 	stroke_color: [number, number, number, number] | null,
 	stroke_width: number | null,
+	stroke_method: StrokeMethod | null,
+	stroke_position: StrokePosition | null,
+	stroke_join: StrokeJoin | null,
+	outer_stroke_color: [number, number, number, number] | null,
+	outer_stroke_width: number | null,
 	alignment: TextAlignment | null,
 	writing_mode: WritingMode | null,
+	line_spacing: number | null,
 };
 
 export type TypographyUpdate = {

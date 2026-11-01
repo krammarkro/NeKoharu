@@ -9,6 +9,8 @@ import {
   ArrowUp,
   Brush,
   ChevronDown,
+  ClipboardPaste,
+  Copy,
   Eye,
   EyeOff,
   Folder,
@@ -35,6 +37,7 @@ import {
   isTextLayer,
   layerChildren,
 } from '@/lib/document'
+import { copySelectedTextLayers, pasteCopiedTextLayers } from '@/lib/layerClipboard'
 import { pageKey, projectKey, queryClient, refresh, useFonts, usePage } from '@/lib/queries'
 import { useKoharuStore } from '@/lib/store'
 import { previewCanvasOpacity } from '@koharu/bridge/canvas'
@@ -43,6 +46,9 @@ import {
   type EntityId,
   type FontFamily,
   type FontStyle,
+  type StrokeMethod,
+  type StrokePosition,
+  type StrokeJoin,
   type Layer,
   type TextAlignment,
   type Typography,
@@ -104,9 +110,17 @@ const defaultTypography: Typography = {
   color: [0, 0, 0, 255],
   stroke_color: [255, 255, 255, 255],
   stroke_width: 0,
+  stroke_method: null,
+  stroke_position: null,
+  stroke_join: null,
+  outer_stroke_color: [0, 0, 0, 255],
+  outer_stroke_width: 0,
   alignment: null,
   writing_mode: null,
+  line_spacing: null,
 }
+
+const defaultLineSpacing = 1.2
 
 export function Inspector() {
   const { t } = useTranslation()
@@ -117,7 +131,7 @@ export function Inspector() {
         <h2 className='text-[10px] font-semibold'>{t('inspector.type')}</h2>
       </div>
 
-      <section className='h-48 min-w-0 shrink-0 overflow-hidden border-b'>
+      <section className='min-w-0 shrink-0 border-b'>
         <TypeInspector />
       </section>
 
@@ -131,9 +145,12 @@ export function Inspector() {
 function TypeInspector() {
   const { t } = useTranslation()
   const borderWidthId = useId()
+  const lineSpacingId = useId()
+  const secondBorderWidthId = useId()
   const page = usePage().data
   const selectedIds = useKoharuStore((state) => state.selectedLayers)
   const availableFonts = useFonts().data
+  const fontSizes = useKoharuStore((state) => state.layerFontSizes)
   const expandedSelection = page ? expandLayerSelection(page.layers, selectedIds) : []
   const selected =
     page?.layers.filter(isTextLayer).filter((layer) => expandedSelection.includes(layer.id)) ?? []
@@ -176,7 +193,12 @@ function TypeInspector() {
       ? available
       : [...available, defaultFont]
   }, [availableFonts])
-  const size = Math.round((typography.size ?? 24) * 100) / 100
+  const fittedSize = current ? fontSizes[current.id] : undefined
+  // Auto-fit shows the size the renderer chose so stepping starts from what is on the page.
+  const size =
+    Math.round(((typography.auto_fit ? fittedSize : undefined) ?? typography.size ?? 24) * 10) /
+    10
+  const lineSpacing = Math.round((typography.line_spacing ?? defaultLineSpacing) * 100)
   const weight = typography.font_weight ?? 400
   const selectedFamily = findFontFamily(families, typography.preferred_font ?? defaultFont.name)
   const styles = usableFontStyles(selectedFamily)
@@ -188,10 +210,30 @@ function TypeInspector() {
   const strokeColor = typography.stroke_color ?? defaultTypography.stroke_color!
   const strokeEnabled = strokeWidth > 0 && strokeColor[3] > 0
   const displayedStrokeWidth = strokeWidth > 0 ? strokeWidth : 1.5
+  const strokeMethod = typography.stroke_method ?? 'expansion'
+  const strokePosition = typography.stroke_position ?? 'outside'
+  const strokeJoin = typography.stroke_join ?? 'round'
+  const outerWidth = typography.outer_stroke_width ?? 0
+  const outerColor = typography.outer_stroke_color ?? defaultTypography.outer_stroke_color!
+  const outerEnabled = strokeEnabled && outerWidth > 0 && outerColor[3] > 0
+  const displayedOuterWidth = outerWidth > 0 ? outerWidth : 3
   const writingMode = typography.writing_mode ?? 'Horizontal'
   const writingModeChoice = typography.writing_mode ?? 'Auto'
   const effectiveAlignment =
     typography.alignment ?? (writingMode === 'Vertical' ? 'Start' : 'Center')
+  const updateFont = (preferred_font: string) => {
+    const family = findFontFamily(families, preferred_font)
+    const nextStyles = usableFontStyles(family)
+    const fontStyle = nextStyles.includes(style) ? style : (nextStyles[0] ?? 'normal')
+    const nextWeights = usableFontWeights(family, fontStyle)
+    const fontWeight = nearestFontWeight(nextWeights, weight)
+    apply((value) => ({
+      ...value,
+      preferred_font,
+      font_weight: fontWeight,
+      font_style: fontStyle,
+    }))
+  }
 
   return (
     <div className='min-w-0 p-2' data-testid='type-inspector' aria-disabled={disabled}>
@@ -203,19 +245,8 @@ function TypeInspector() {
               families={families}
               disabled={disabled}
               size='sm'
-              onChange={(preferred_font) => {
-                const family = findFontFamily(families, preferred_font)
-                const nextStyles = usableFontStyles(family)
-                const fontStyle = nextStyles.includes(style) ? style : (nextStyles[0] ?? 'normal')
-                const nextWeights = usableFontWeights(family, fontStyle)
-                const fontWeight = nearestFontWeight(nextWeights, weight)
-                apply((value) => ({
-                  ...value,
-                  preferred_font,
-                  font_weight: fontWeight,
-                  font_style: fontStyle,
-                }))
-              }}
+              onPreview={updateFont}
+              onChange={updateFont}
             />
           </InspectorField>
           <InspectorField label={t('inspector.color')}>
@@ -304,7 +335,7 @@ function TypeInspector() {
           </InspectorField>
         </div>
 
-        <div className='grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(6.5rem,1fr)] gap-1.5'>
+        <div className='grid min-w-0 grid-cols-[4.75rem_minmax(0,1fr)_minmax(0,1fr)] gap-1.5'>
           <InspectorField label={t('inspector.alignment')}>
             <div className='grid h-6 grid-cols-3 rounded-md border border-input bg-background p-px'>
               {(
@@ -371,6 +402,34 @@ function TypeInspector() {
               </SelectContent>
             </Select>
           </InspectorField>
+          <InspectorField label={t('inspector.leading')}>
+            <NumberField
+              id={lineSpacingId}
+              name='line-spacing'
+              className='min-w-0'
+              disabled={disabled}
+              value={lineSpacing}
+              min={50}
+              max={300}
+              step={5}
+              format={{ style: 'unit', unit: 'percent', maximumFractionDigits: 0 }}
+              onValueChange={(next) => {
+                if (next !== null && next >= 50 && next <= 300) {
+                  apply((value) => ({ ...value, line_spacing: next / 100 }))
+                }
+              }}
+            >
+              <NumberFieldGroup>
+                <NumberFieldDecrement aria-label={t('inspector.decreaseLeading')}>
+                  <Minus />
+                </NumberFieldDecrement>
+                <NumberFieldInput aria-label={t('inspector.lineSpacing')} />
+                <NumberFieldIncrement aria-label={t('inspector.increaseLeading')}>
+                  <Plus />
+                </NumberFieldIncrement>
+              </NumberFieldGroup>
+            </NumberField>
+          </InspectorField>
         </div>
 
         <div className='grid min-w-0 grid-cols-[2.75rem_minmax(5.5rem,1fr)] items-end gap-1.5'>
@@ -427,6 +486,138 @@ function TypeInspector() {
                 </NumberFieldIncrement>
               </NumberFieldGroup>
             </NumberField>
+          </InspectorField>
+        </div>
+        <div className='grid min-w-0 grid-cols-[2.75rem_minmax(5.5rem,1fr)] items-end gap-1.5'>
+          <InspectorField label={t('inspector.secondBorder')}>
+            <ColorWell
+              label={t('inspector.secondBorderColor')}
+              size='sm'
+              disabled={disabled || !strokeEnabled}
+              allowTransparent
+              value={outerEnabled ? rgbaToHex(outerColor) : null}
+              onChange={(outer_stroke_color) => {
+                apply((value) => {
+                  if (outer_stroke_color === null) {
+                    return { ...value, outer_stroke_width: 0 }
+                  }
+                  const width = value.outer_stroke_width ?? 0
+                  return {
+                    ...value,
+                    outer_stroke_color: hexToRgba(outer_stroke_color),
+                    outer_stroke_width: width > 0 ? width : 3,
+                  }
+                })
+              }}
+            />
+          </InspectorField>
+          <InspectorField label={t('inspector.width')}>
+            <NumberField
+              id={secondBorderWidthId}
+              name='second-border-width'
+              className='min-w-0'
+              disabled={disabled || !strokeEnabled}
+              value={displayedOuterWidth}
+              min={0.5}
+              max={32}
+              step={0.5}
+              onValueChange={(next) => {
+                if (next !== null && next >= 0.5 && next <= 32) {
+                  apply((value) => ({ ...value, outer_stroke_width: next }))
+                }
+              }}
+            >
+              <NumberFieldGroup>
+                <NumberFieldDecrement aria-label={t('inspector.decreaseSecondBorderWidth')}>
+                  <Minus />
+                </NumberFieldDecrement>
+                <NumberFieldInput aria-label={t('inspector.secondBorderWidth')} />
+                <NumberFieldIncrement aria-label={t('inspector.increaseSecondBorderWidth')}>
+                  <Plus />
+                </NumberFieldIncrement>
+              </NumberFieldGroup>
+            </NumberField>
+          </InspectorField>
+        </div>
+        <div className='grid min-w-0 grid-cols-2 gap-1.5'>
+          <InspectorField label={t('inspector.outlineMethod')}>
+            <Select
+              disabled={disabled}
+              value={strokeMethod}
+              onValueChange={(method) =>
+                apply((value) => ({ ...value, stroke_method: method as StrokeMethod }))
+              }
+            >
+              <SelectTrigger size='sm' aria-label={t('inspector.outlineMethod')} className='w-full'>
+                <SelectValue>
+                  {t(
+                    strokeMethod === 'contour'
+                      ? 'inspector.outlineContour'
+                      : 'inspector.outlineExpansion',
+                  )}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value='expansion'>{t('inspector.outlineExpansion')}</SelectItem>
+                <SelectItem value='contour'>{t('inspector.outlineContour')}</SelectItem>
+              </SelectContent>
+            </Select>
+          </InspectorField>
+          <InspectorField label={t('inspector.outlinePosition')}>
+            <Select
+              disabled={disabled || strokeMethod !== 'contour'}
+              value={strokePosition}
+              onValueChange={(position) =>
+                apply((value) => ({ ...value, stroke_position: position as StrokePosition }))
+              }
+            >
+              <SelectTrigger
+                size='sm'
+                aria-label={t('inspector.outlinePosition')}
+                className='w-full'
+              >
+                <SelectValue>
+                  {t(
+                    {
+                      outside: 'inspector.outlineOutside',
+                      center: 'inspector.outlineCenter',
+                      inside: 'inspector.outlineInside',
+                    }[strokePosition],
+                  )}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value='outside'>{t('inspector.outlineOutside')}</SelectItem>
+                <SelectItem value='center'>{t('inspector.outlineCenter')}</SelectItem>
+                <SelectItem value='inside'>{t('inspector.outlineInside')}</SelectItem>
+              </SelectContent>
+            </Select>
+          </InspectorField>
+          <InspectorField label={t('inspector.outlineJoin')}>
+            <Select
+              disabled={disabled || strokeMethod !== 'contour'}
+              value={strokeJoin}
+              onValueChange={(join) =>
+                apply((value) => ({ ...value, stroke_join: join as StrokeJoin }))
+              }
+            >
+              <SelectTrigger size='sm' aria-label={t('inspector.outlineJoin')} className='w-full'>
+                <SelectValue>
+                  {t(
+                    {
+                      round: 'inspector.outlineRound',
+                      miter: 'inspector.outlineMiter',
+                      bevel: 'inspector.outlineBevel',
+                    }[strokeJoin],
+                  )}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value='round'>{t('inspector.outlineRound')}</SelectItem>
+                <SelectItem value='miter'>{t('inspector.outlineMiter')}</SelectItem>
+                <SelectItem value='bevel'>{t('inspector.outlineBevel')}</SelectItem>
+              </SelectContent>
+            </Select>
           </InspectorField>
         </div>
       </div>
@@ -494,6 +685,7 @@ function LayersInspector() {
   const { t } = useTranslation()
   const page = usePage().data
   const selected = useKoharuStore((state) => state.selectedLayers)
+  const copiedTextLayers = useKoharuStore((state) => state.copiedTextLayers)
   const selectLayers = useKoharuStore((state) => state.selectLayers)
   const [expandedLayer, setExpandedLayer] = useState<EntityId | null>(
     selected.length === 1 ? (selected[0] ?? null) : null,
@@ -591,6 +783,30 @@ function LayersInspector() {
         <span className='text-[9px] text-muted-foreground tabular-nums'>
           {page.layers.filter((layer) => !isGroupLayer(layer)).length}
         </span>
+        <div className='ml-auto flex items-center gap-0.5'>
+          <Button
+            type='button'
+            variant='ghost'
+            size='icon-xs'
+            aria-label={t('layers.copySelected')}
+            disabled={
+              !page.layers.some((layer) => layer.type === 'text' && selected.includes(layer.id))
+            }
+            onClick={() => copySelectedTextLayers(page)}
+          >
+            <Copy className='size-3' />
+          </Button>
+          <Button
+            type='button'
+            variant='ghost'
+            size='icon-xs'
+            aria-label={t('layers.pasteCopied')}
+            disabled={!copiedTextLayers.length}
+            onClick={() => void pasteCopiedTextLayers(page).catch(() => undefined)}
+          >
+            <ClipboardPaste className='size-3' />
+          </Button>
+        </div>
       </header>
 
       <ScrollArea className='min-h-0 flex-1'>
@@ -938,7 +1154,7 @@ function FontSizeField({
   const [draft, setDraft] = useState<number | null>(value)
 
   useEffect(() => {
-    setDraft(autoFit ? null : value)
+    setDraft(value)
   }, [autoFit, value])
 
   const select = (choice: string) => {
@@ -956,9 +1172,9 @@ function FontSizeField({
 
   const commit = (next: number | null) => {
     if (next !== null && next > 0 && next <= 300) {
-      onChange(next)
+      if (next !== value) onChange(next)
     } else {
-      setDraft(autoFit ? null : value)
+      setDraft(value)
     }
   }
 
@@ -971,17 +1187,25 @@ function FontSizeField({
       value={draft}
       min={0.5}
       max={300}
-      step={0.5}
+      step={1}
+      smallStep={0.5}
       onValueChange={setDraft}
       onValueCommitted={commit}
     >
       <NumberFieldGroup>
+        <NumberFieldDecrement aria-label={t('inspector.decreaseFontSize')}>
+          <Minus />
+        </NumberFieldDecrement>
         <NumberFieldInput
           data-testid='type-size'
+          data-auto={autoFit}
           aria-label={t('inspector.fontSize')}
-          placeholder={t('inspector.auto')}
-          className='px-2 text-left'
+          title={autoFit ? t('inspector.autoFit') : undefined}
+          className='min-w-0 px-1 data-[auto=true]:text-muted-foreground'
         />
+        <NumberFieldIncrement aria-label={t('inspector.increaseFontSize')}>
+          <Plus />
+        </NumberFieldIncrement>
         <DropdownMenu>
           <DropdownMenuTrigger
             disabled={disabled}

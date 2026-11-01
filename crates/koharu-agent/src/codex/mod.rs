@@ -9,21 +9,16 @@ use reqwest::{Client, StatusCode};
 use serde::Serialize;
 use specta::Type;
 
-use crate::{Control, Reasoning};
+use crate::{
+    AgentModel, Control,
+    backend::{Delta, Prompt, Turn},
+};
 
 pub use auth::Account;
 use auth::Auth;
-pub(crate) use protocol::{Request, function_output, message, project_context};
-pub(crate) use stream::{Delta, Turn};
+use protocol::Request;
 
 const RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
-
-#[derive(Clone, Debug, Serialize, Type)]
-pub struct CodexModel {
-    pub id: String,
-    pub name: String,
-    pub reasoning: Vec<Reasoning>,
-}
 
 #[derive(Clone, Debug, Serialize, Type)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -69,13 +64,13 @@ impl Codex {
     }
 
     #[tracing::instrument(skip_all)]
-    pub async fn models(&self) -> Result<Vec<CodexModel>> {
+    pub async fn models(&self) -> Result<Vec<AgentModel>> {
         catalog::models(&self.client, &self.auth).await
     }
 
     pub(crate) async fn respond<F>(
         &self,
-        request: &Request,
+        prompt: &Prompt<'_>,
         control: &Control,
         publish: F,
     ) -> Result<Turn>
@@ -83,11 +78,12 @@ impl Codex {
         F: FnMut(Delta),
     {
         control.ensure_running()?;
+        let request = Request::new(prompt)?;
         let session = self.auth.session().await?;
-        let mut response = self.send(request, &session, control).await?;
+        let mut response = self.send(&request, &session, control).await?;
         if response.status() == StatusCode::UNAUTHORIZED {
             let session = self.auth.force_refresh().await?;
-            response = self.send(request, &session, control).await?;
+            response = self.send(&request, &session, control).await?;
         }
         if !response.status().is_success() {
             let status = response.status();

@@ -84,6 +84,11 @@ Document only durable, repository-specific constraints here. Do not record curre
 - Keep the pull-request text short: problem, change, and verification. A human reviews the whole diff and can explain every change. Do not submit an unreviewed autonomous patch.
 - Never add an AI assistant as a co-author of a git commit, such as through a `Co-Authored-By` trailer.
 
+## Versioning
+
+- NeKoharu release versions carry an `-N` suffix on the upstream-style semver, such as `0.85.0-N`, and the release tag matches it, such as `v0.85.0-N`.
+- MSI rejects a non-numeric suffix, so the Windows Tauri config pins the numeric base for the installer. Bump it with the workspace version.
+
 ## Desktop UI Debugging
 
 - Debug builds must expose the CEF remote debugging endpoint at `http://127.0.0.1:4000` through CEF's command-line arguments.

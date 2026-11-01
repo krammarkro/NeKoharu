@@ -36,6 +36,7 @@ pub(crate) struct Execution<'a> {
     base: koharu_scene::Revision,
     started: Instant,
     inpainting_mask: Option<crate::InpaintingMask>,
+    text_box: Option<crate::TextBox>,
 }
 
 impl<'a> Execution<'a> {
@@ -52,9 +53,19 @@ impl<'a> Execution<'a> {
             .operation
             .stages()
             .map_err(|error| PipelineError::new(ErrorKind::InvalidInput, None, error))?;
-        let scope = NormalizedScope::new(&snapshot, &request.scope, &stages)
-            .map_err(|error| PipelineError::new(ErrorKind::InvalidInput, None, error))?;
+        let scope = NormalizedScope::new(
+            &snapshot,
+            &request.scope,
+            &stages,
+            request.inpainting_mask.is_some(),
+        )
+        .map_err(|error| PipelineError::new(ErrorKind::InvalidInput, None, error))?;
         let pages = scope.pages().to_vec();
+        let translation_batch_size = if stages.contains(&Stage::Translation) {
+            runner.translation_batch_size()
+        } else {
+            1
+        };
         if let Some(mask) = request.inpainting_mask.as_ref()
             && (!pages.contains(&mask.page) || !stages.contains(&Stage::Inpainting))
         {
@@ -63,6 +74,26 @@ impl<'a> Execution<'a> {
                 Some(Stage::Inpainting),
                 anyhow::anyhow!("the inpainting mask page is outside the inpainting scope"),
             ));
+        }
+        if let Some(text_box) = request.text_box.as_ref() {
+            let invalid = if request.inpainting_mask.is_some() {
+                Some("a text box cannot be combined with an inpainting mask")
+            } else if !pages.contains(&text_box.page) {
+                Some("the text box page is outside the scope")
+            } else if !stages.contains(&Stage::Detection) {
+                Some("a text box needs the detection stage")
+            } else if text_box.geometry.points.len() < 3 {
+                Some("a text box needs at least three points")
+            } else {
+                None
+            };
+            if let Some(reason) = invalid {
+                return Err(PipelineError::new(
+                    ErrorKind::InvalidInput,
+                    Some(Stage::Detection),
+                    anyhow::anyhow!(reason),
+                ));
+            }
         }
         progress::emit(
             request.progress.as_ref(),
@@ -79,7 +110,7 @@ impl<'a> Execution<'a> {
             stop: request.stop,
             progress: request.progress,
             scope,
-            scheduler: Scheduler::new(&pages, &stages),
+            scheduler: Scheduler::new(&pages, &stages, translation_batch_size),
             scene: snapshot,
             images: BTreeMap::new(),
             busy_stages: BTreeSet::new(),
@@ -88,6 +119,7 @@ impl<'a> Execution<'a> {
             base,
             started,
             inpainting_mask: request.inpainting_mask,
+            text_box: request.text_box,
         })
     }
 
@@ -125,26 +157,39 @@ impl<'a> Execution<'a> {
         if self.stopped() || self.failure.is_some() {
             return None;
         }
-        let (page, stage) = self.scheduler.start_next(&self.busy_stages)?;
+        let (pages, stage) = self.scheduler.start_next(&self.busy_stages)?;
         self.busy_stages.insert(stage);
-        let images = self
-            .images
-            .entry(page)
-            .or_insert_with(|| Arc::new(ImageCache::default()))
-            .clone();
+        let inputs = pages
+            .iter()
+            .map(|page| {
+                let images = self
+                    .images
+                    .entry(*page)
+                    .or_insert_with(|| Arc::new(ImageCache::default()))
+                    .clone();
+                StageInput::new(
+                    self.scene.clone(),
+                    *page,
+                    self.scope.entities(),
+                    self.scope.region(*page),
+                    images,
+                    self.inpainting_mask
+                        .as_ref()
+                        .filter(|mask| stage == Stage::Inpainting && mask.page == *page)
+                        .cloned(),
+                    self.text_box
+                        .as_ref()
+                        .filter(|text_box| {
+                            matches!(stage, Stage::Detection | Stage::Inpainting)
+                                && text_box.page == *page
+                        })
+                        .cloned(),
+                )
+            })
+            .collect();
         Some(StageJob::new(
             stage,
-            StageInput::new(
-                self.scene.clone(),
-                page,
-                self.scope.entities(),
-                self.scope.region(page),
-                images,
-                self.inpainting_mask
-                    .as_ref()
-                    .filter(|mask| stage == Stage::Inpainting && mask.page == page)
-                    .cloned(),
-            ),
+            inputs,
             self.stop.clone(),
             self.progress.clone(),
         ))
@@ -155,7 +200,7 @@ impl<'a> Execution<'a> {
         completion: StageCompletion,
     ) -> std::result::Result<(), PipelineError> {
         let StageCompletion {
-            page,
+            pages,
             stage,
             model,
             elapsed,
@@ -164,23 +209,27 @@ impl<'a> Execution<'a> {
         match outcome? {
             StageOutcome::Stopped => {}
             StageOutcome::Skipped => {
-                self.mark_complete(page, stage);
-                progress::emit(self.progress.as_ref(), Progress::Skipped { page, stage });
+                for page in pages {
+                    self.mark_complete(page, stage);
+                    progress::emit(self.progress.as_ref(), Progress::Skipped { page, stage });
+                }
             }
             StageOutcome::Patch(patch) => {
-                if !self.commit_patch(page, stage, patch).await? {
+                if !self.commit_patch(&pages, stage, patch).await? {
                     return Ok(());
                 }
-                self.mark_complete(page, stage);
-                progress::emit(
-                    self.progress.as_ref(),
-                    Progress::Finished {
-                        page,
-                        stage,
-                        model,
-                        elapsed,
-                    },
-                );
+                for page in pages {
+                    self.mark_complete(page, stage);
+                    progress::emit(
+                        self.progress.as_ref(),
+                        Progress::Finished {
+                            page,
+                            stage,
+                            model: model.clone(),
+                            elapsed,
+                        },
+                    );
+                }
             }
         }
         Ok(())
@@ -188,7 +237,7 @@ impl<'a> Execution<'a> {
 
     async fn commit_patch(
         &mut self,
-        page: EntityId,
+        pages: &[EntityId],
         stage: Stage,
         patch: koharu_scene::Patch,
     ) -> std::result::Result<bool, PipelineError> {
@@ -196,7 +245,12 @@ impl<'a> Execution<'a> {
             .rebase_on(&self.scene)
             .and_then(|patch| {
                 patch.validate_on(&self.scene)?;
-                Ok(patch.with_label(format!("Pipeline {stage} for page {page}")))
+                let label = if pages.len() == 1 {
+                    format!("Pipeline {stage} for page {}", pages[0])
+                } else {
+                    format!("Pipeline {stage} for {} pages", pages.len())
+                };
+                Ok(patch.with_label(label))
             })
             .context("failed to rebase stage output onto the latest scene")
             .map_err(|error| PipelineError::new(ErrorKind::InvalidOutput, Some(stage), error))?;
@@ -206,9 +260,13 @@ impl<'a> Execution<'a> {
 
         let next = self
             .committer
-            .commit(StageOutput { page, stage, patch })
+            .commit(StageOutput {
+                page: pages[0],
+                stage,
+                patch,
+            })
             .await
-            .with_context(|| format!("failed to commit {stage} output for page {page}"))
+            .with_context(|| format!("failed to commit {stage} output for {} pages", pages.len()))
             .map_err(|error| PipelineError::new(ErrorKind::Commit, Some(stage), error))?;
         validate_commit(&self.scene, &next)
             .map_err(|error| PipelineError::new(ErrorKind::Commit, Some(stage), error))?;

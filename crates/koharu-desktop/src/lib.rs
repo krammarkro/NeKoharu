@@ -36,6 +36,13 @@ pub struct TransformFrame {
     pub frame: Frame,
 }
 
+/// The size a text layer was laid out at, including the result of auto-fit.
+#[derive(Clone, Copy, Debug, Serialize, Type)]
+pub struct TextSize {
+    pub element: EntityId,
+    pub font_size: f32,
+}
+
 #[derive(Clone, Debug, Serialize, Type)]
 pub struct CanvasState {
     pub page: Option<EntityId>,
@@ -44,6 +51,7 @@ pub struct CanvasState {
     pub generation: u64,
     pub size: [u32; 2],
     pub element_frames: Vec<TransformFrame>,
+    pub text_sizes: Vec<TextSize>,
 }
 
 #[derive(Default)]
@@ -195,6 +203,7 @@ impl Desktop {
                 generation: presentation.generation,
                 size: [0, 0],
                 element_frames: Vec::new(),
+                text_sizes: Vec::new(),
             };
         };
         let (width, height) = frame.size();
@@ -220,12 +229,24 @@ impl Desktop {
                 })
             })
             .collect();
+        let text_sizes = frame
+            .layers()
+            .iter()
+            .filter_map(|layer| match layer.kind() {
+                LayerKind::Text(text) => Some(TextSize {
+                    element: layer.entity(),
+                    font_size: text.font_size,
+                }),
+                LayerKind::Image(_) => None,
+            })
+            .collect();
         CanvasState {
             page: Some(frame.page()),
             revision: Some(frame.revision()),
             generation: presentation.generation,
             size: [width, height],
             element_frames,
+            text_sizes,
         }
     }
 

@@ -1,23 +1,57 @@
 name: Release
 
 on:
-  workflow_dispatch:
   push:
     tags:
-      - '*'
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build and release'
+        required: true
+        type: string
 
 permissions:
-  actions: read
   contents: write
-  id-token: write
-  packages: write
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      # The updater compares semver versions, so a tag that does not match the
+      # workspace version would build fine but never be offered as an update.
+      - name: Check tag matches workspace version
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          if [[ "v${version}" != "${RELEASE_TAG}" ]]; then
+            echo "::error::Tag ${RELEASE_TAG} does not match Cargo workspace version v${version}"
+            exit 1
+          fi
+
+      # Fork versions carry a -N suffix, which MSI rejects, so the Windows
+      # config pins the numeric base for the installer.
+      - name: Check MSI version matches workspace version
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          msi=$(jq -r '.bundle.windows.wix.version' crates/koharu/tauri.windows.conf.json)
+          if [[ "${msi}" != "${version%%-*}" ]]; then
+            echo "::error::MSI version ${msi} in tauri.windows.conf.json does not match ${version%%-*}"
+            exit 1
+          fi
+
   release:
-    if: github.ref_type == 'tag'
+    needs: verify
     strategy:
       fail-fast: false
       matrix:
@@ -32,18 +66,20 @@ jobs:
             args: ''
 
     runs-on: ${{ matrix.platform }}
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
-          fetch-tags: true
 
       - uses: oven-sh/setup-bun@v2
 
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: koharu-app-${{ matrix.platform }}
-          # Main-branch builds own the shared dependency cache.
+          # Build-branch builds own the shared dependency cache.
           save-if: false
 
       - name: Install macOS CEF helper targets
@@ -57,7 +93,6 @@ jobs:
           sudo apt install --no-install-recommends \
             libgtk-4-dev \
             build-essential \
-            llvm \
             curl \
             wget \
             file \
@@ -74,17 +109,37 @@ jobs:
       - name: Install dependencies
         run: bun install
 
-      - name: Setup Sentry CLI
-        uses: matbour/setup-sentry-cli@v3
-        with:
-          token: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          organization: ${{ vars.SENTRY_ORG }}
-          project: rust
+      - name: Build Tauri CLI with the CEF bundling fix
+        # tauri-cli 3.0.0-alpha.5 at the pinned revision still copies the ANGLE
+        # libraries CEF stopped shipping in 154, so every non-macOS bundle
+        # fails. Drop this step once tauri-apps/tauri#16338 is published.
+        shell: bash
+        run: |
+          src="$GITHUB_WORKSPACE/../tauri-cli-src"
+          patch="$RUNNER_TEMP/tauri-cef-no-angle.patch"
+          rm -rf "$src"
+          git init --quiet "$src"
+          git -C "$src" config core.autocrlf false
+          git -C "$src" remote add origin https://github.com/tauri-apps/tauri
+          git -C "$src" fetch --quiet --depth 1 origin 78f49ba3993fed5a1b921235c547731006ad2a74
+          git -C "$src" checkout --quiet FETCH_HEAD
+          # Strip CRLF in case the checkout that produced this file normalized it.
+          tr -d '\r' < "$GITHUB_WORKSPACE/.github/patches/tauri-cef-no-angle.patch" > "$patch"
+          git -C "$src" apply "$patch"
+          cargo install --path "$src/crates/tauri-cli" --locked --force
+
+      - name: Fetch upstream tags for changelog boundaries
+        # The fork only carries its own tags, so without upstream's tags
+        # git-cliff treats the first fork release as the first release ever
+        # and dumps the whole project history into the changelog.
+        run: git fetch --tags --force https://github.com/koharu-rs/koharu.git
 
       - name: Generate release changelog
         id: release_notes
         shell: bash
         env:
+          # [remote.github] enrichment needs a token or the GitHub API
+          # rate-limits shared runner IPs and git-cliff panics.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           {
@@ -95,40 +150,16 @@ jobs:
 
       - uses: tauri-apps/tauri-action@v1
         env:
+          # Tauri's quick-sharun fork still needs anylinux.c, removed from upstream main.
+          ANYLINUX_LIB_SOURCE: https://raw.githubusercontent.com/FabianLars/Anylinux-AppImages/3e280d1b2270fecfcb2c2c823b490c782ecf1277/useful-tools/lib/anylinux.c
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM }}
-          APPLE_CERTIFICATE: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
-          APPLE_CERTIFICATE_PASSWORD: ""
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
-          SIGNPATH_APPROVER_API_TOKEN: ${{ secrets.SIGNPATH_APPROVER_API_TOKEN }}
-          SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
-          SIGNPATH_SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
-          SIGNPATH_ARTIFACT_CONFIGURATION_SLUG: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
-          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
-          NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN }}
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
         with:
           tauriScript: cargo tauri
-          tagName: ${{ github.ref_name }}
-          releaseName: ${{ github.ref_name }}
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: ${{ env.RELEASE_TAG }}
           releaseBody: ${{ steps.release_notes.outputs.release_body }}
-          releaseDraft: false
+          releaseDraft: true
           prerelease: false
-          args: >-
-            ${{ matrix.args }}
-            --config '{"build":{"beforeBundleCommand":"bash .github/sentry.sh"}}'
-
-  winget:
-    needs: release
-    runs-on: ubuntu-latest
-    steps:
-      - uses: vedantmgoyal9/winget-releaser@main
-        with:
-          identifier: mayocream.koharu
-          version: ${{ github.ref_name }}
-          installers-regex: '(-setup\.exe|\.msi)$'
-          token: ${{ secrets.WINGET_TOKEN }}
+          args: ${{ matrix.args }}

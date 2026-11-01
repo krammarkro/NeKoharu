@@ -7,9 +7,10 @@ mod format;
 mod ids;
 mod session;
 
-pub use blobs::Blobs;
+pub use blobs::{BlobOrigin, Blobs};
 pub use bytes::Bytes;
 pub use error::{Error, Result};
+pub use format::{StoredState, decode_state, encode_state};
 pub use ids::{BlobId, DocumentId, PatchId, Revision};
 pub use session::{GcReport, Session, State};
 

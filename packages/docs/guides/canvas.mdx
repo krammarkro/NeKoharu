@@ -19,11 +19,20 @@ Use **Select** to pick editable layers; hold `Shift`, `Ctrl`, or `Command` to ad
     Click with **Text** to create point text, or drag to create a paragraph frame. Enter the
     translation in the inspector and adjust [typography and fitting](/guides/typesetting).
   </Tab>
+  <Tab title='OCR'>
+    Drag a box with **OCR** to recognize text that detection missed, such as sound effects. Koharu
+    creates a text layer for that box, then recognizes and translates the text inside it. **OCR and
+    clean** first runs detection inside the box, so each sound effect or line of text it finds gets
+    its own text layer, and only that lettering is cleaned rather than the whole box. Text that was
+    already read keeps its layer. If detection finds nothing in the box, the whole box is read and
+    cleaned.
+  </Tab>
   <Tab title='Brush and Eraser'>
     **Brush** paints on the selected raster layer with the chosen color and diameter, or creates a
     new Paint layer when no raster layer is selected. **Eraser** needs a selected raster layer. Both
     tools also accept the cleanup layer that inpainting produced; painting on it makes that layer
-    yours. Hold `Alt` and scroll to change the diameter.
+    yours. Hold `Alt` and scroll to change the diameter, or hold `Ctrl` + `Alt` (`Ctrl` + `Option`
+    on macOS) and drag left or right on the canvas to resize the brush; `Escape` restores the size.
   </Tab>
   <Tab title='Color picker'>
     Sample the composited canvas with **Color picker**. Apply the sampled color to brush strokes or

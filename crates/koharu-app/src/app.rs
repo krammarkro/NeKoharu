@@ -12,6 +12,7 @@ use crate::commands::{
     },
     processing::{JobChannel, Processing},
     project::{CurrentProject, ProjectLibrary},
+    session::{SessionChannel, SessionState},
 };
 
 pub(crate) async fn initialize(handle: AppHandle<CefRuntime>) -> Result<()> {
@@ -121,6 +122,8 @@ pub fn run(context: tauri::Context<CefRuntime>) -> Result<()> {
             application.manage(DownloadChannel::default());
             application.manage(ResourceChannel::default());
             application.manage(ProjectChannel::default());
+            application.manage(SessionChannel::default());
+            application.manage(SessionState::default());
             application.manage(Initialization::default());
 
             let handle = application.handle().clone();
@@ -156,14 +159,17 @@ pub fn run(context: tauri::Context<CefRuntime>) -> Result<()> {
                     match downloads.recv().await {
                         Ok(event) => {
                             let download = match event {
-                                koharu_runtime::download::Event::Started { id, name } => Download {
-                                    id,
-                                    state: DownloadState::Running,
-                                    name: Some(name),
-                                    completed: 0,
-                                    total: 0,
-                                    error: None,
-                                },
+                                koharu_runtime::download::Event::Started { id, name } => {
+                                    tracing::info!(download_id = id, %name, "download activity");
+                                    Download {
+                                        id,
+                                        state: DownloadState::Running,
+                                        name: Some(name),
+                                        completed: 0,
+                                        total: 0,
+                                        error: None,
+                                    }
+                                }
                                 koharu_runtime::download::Event::Progress {
                                     id,
                                     name,
@@ -177,15 +183,30 @@ pub fn run(context: tauri::Context<CefRuntime>) -> Result<()> {
                                     total,
                                     error: None,
                                 },
-                                koharu_runtime::download::Event::Finished { id } => Download {
-                                    id,
-                                    state: DownloadState::Finished,
-                                    name: None,
-                                    completed: 0,
-                                    total: 0,
-                                    error: None,
-                                },
+                                koharu_runtime::download::Event::Finished { id } => {
+                                    tracing::info!(download_id = id, "download activity done");
+                                    Download {
+                                        id,
+                                        state: DownloadState::Finished,
+                                        name: None,
+                                        completed: 0,
+                                        total: 0,
+                                        error: None,
+                                    }
+                                }
+                                koharu_runtime::download::Event::Cancelled { id } => {
+                                    tracing::info!(download_id = id, "download activity cancelled");
+                                    Download {
+                                        id,
+                                        state: DownloadState::Cancelled,
+                                        name: None,
+                                        completed: 0,
+                                        total: 0,
+                                        error: None,
+                                    }
+                                }
                                 koharu_runtime::download::Event::Failed { id, name, error } => {
+                                    tracing::info!(download_id = id, %name, %error, "download activity failed");
                                     Download {
                                         id,
                                         state: DownloadState::Failed,
@@ -198,10 +219,18 @@ pub fn run(context: tauri::Context<CefRuntime>) -> Result<()> {
                             };
                             let downloads = download_handle.state::<DownloadChannel>();
                             let mut channel = downloads.channel.lock();
-                            if let Some(current) = channel.as_ref()
-                                && current.send(download).is_err()
-                            {
-                                channel.take();
+                            match channel.as_ref() {
+                                Some(current) => {
+                                    if let Err(error) = current.send(download) {
+                                        tracing::warn!(%error, "download channel send failed");
+                                        channel.take();
+                                    }
+                                }
+                                None => {
+                                    tracing::warn!(
+                                        "download event arrived before the frontend subscribed"
+                                    );
+                                }
                             }
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {

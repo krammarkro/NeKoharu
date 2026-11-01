@@ -11,7 +11,7 @@ use koharu_scene::{AssetRole, EntityId, Snapshot};
 use rayon::prelude::*;
 use serde::Deserialize;
 use specta::Type;
-use std::{io::Write as _, sync::Arc};
+use std::{collections::HashSet, io::Write as _, sync::Arc};
 use tauri::{State, WebviewWindow, ipc::IpcResponse};
 use tauri_runtime_cef::CefRuntime;
 
@@ -43,6 +43,7 @@ pub enum ExportFormat {
 pub(crate) async fn export(
     window: WebviewWindow<CefRuntime>,
     format: ExportFormat,
+    selected_pages: Option<Vec<EntityId>>,
     project: State<'_, CurrentProject>,
     desktop: State<'_, Desktop>,
 ) -> std::result::Result<(), Error> {
@@ -51,10 +52,10 @@ pub(crate) async fn export(
         let project = project.as_ref().context("no project is open")?;
         (project.name.clone(), project.snapshot())
     };
-    let pages = snapshot.pages().map(|page| page.id()).collect::<Vec<_>>();
-    if pages.is_empty() {
-        return Err(anyhow::anyhow!("there are no pages to export").into());
-    }
+    let pages = resolve_export_pages(
+        snapshot.pages().map(|page| page.id()).collect(),
+        selected_pages,
+    )?;
     let dialog = rfd::AsyncFileDialog::new().set_parent(&window);
     let destination = match format {
         ExportFormat::Png | ExportFormat::Psd => dialog.pick_folder().await,
@@ -156,6 +157,32 @@ pub(crate) async fn export(
     Ok(())
 }
 
+fn resolve_export_pages(
+    project_pages: Vec<EntityId>,
+    selected_pages: Option<Vec<EntityId>>,
+) -> Result<Vec<EntityId>> {
+    let is_selection = selected_pages.is_some();
+    let pages = match selected_pages {
+        Some(selected_pages) => {
+            let selected = selected_pages.into_iter().collect::<HashSet<_>>();
+            project_pages
+                .into_iter()
+                .filter(|page| selected.contains(page))
+                .collect()
+        }
+        None => project_pages,
+    };
+    if pages.is_empty() {
+        let message = if is_selection {
+            "none of the selected pages belong to this project"
+        } else {
+            "there are no pages to export"
+        };
+        return Err(anyhow::anyhow!(message));
+    }
+    Ok(pages)
+}
+
 #[tauri::command]
 #[specta::specta]
 pub(crate) async fn get_thumbnail(
@@ -186,6 +213,30 @@ pub(crate) async fn get_thumbnail(
     })
     .await?;
     Ok(ThumbnailBytes(bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_export_pages;
+    use koharu_scene::EntityId;
+
+    #[test]
+    fn selected_pages_keep_project_order_and_ignore_duplicate_ids() {
+        let project_pages = vec![EntityId::new(), EntityId::new(), EntityId::new()];
+        let requested = vec![project_pages[2], project_pages[0], project_pages[2]];
+
+        assert_eq!(
+            resolve_export_pages(project_pages.clone(), Some(requested)).unwrap(),
+            vec![project_pages[0], project_pages[2]],
+        );
+    }
+
+    #[test]
+    fn selected_pages_must_belong_to_the_project() {
+        let project_page = EntityId::new();
+
+        assert!(resolve_export_pages(vec![project_page], Some(vec![EntityId::new()])).is_err());
+    }
 }
 
 pub(crate) async fn rendered_preview(

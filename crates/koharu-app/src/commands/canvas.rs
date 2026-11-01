@@ -191,6 +191,119 @@ pub(crate) async fn add_text_box(
 
 #[tauri::command]
 #[specta::specta]
+pub(crate) async fn add_ocr_box(
+    frame: Frame,
+    handle: AppHandle<CefRuntime>,
+    desktop: State<'_, Desktop>,
+    project: State<'_, CurrentProject>,
+    canvas_channel: State<'_, CanvasChannel>,
+) -> Result<LayerCommit, Error> {
+    if !handle.state::<Processing>().stops.lock().is_empty() {
+        return Err(anyhow!("another process is already running").into());
+    }
+    let (commit, page, layer, region) = {
+        let mut project = project.project.lock().await;
+        let project = project.as_mut().context("no project is open")?;
+        let box_page = project
+            .active_page()
+            .context("the project has no active page")?;
+        let (commit, layer, region) = project.add_ocr_box(box_page, frame).await?;
+        project.record_commit(&commit);
+        (commit, project.active_page(), layer, region)
+    };
+    desktop.synchronize(&commit.snapshot, page, &commit).await?;
+    canvas_channel.channel.publish(desktop.canvas_state());
+    processing::process(
+        handle.clone(),
+        koharu_pipeline::Scope::Entities(vec![region, layer]),
+        koharu_pipeline::Operation::Stages {
+            stages: vec![
+                koharu_pipeline::Stage::Ocr,
+                koharu_pipeline::Stage::Translation,
+            ],
+        },
+        handle.state::<CurrentProject>(),
+        handle.state::<Processing>(),
+        handle.state::<JobChannel>(),
+    )
+    .await?;
+    Ok(LayerCommit {
+        revision: commit.revision,
+        layer,
+    })
+}
+
+/// Reads and cleans the text inside a box the user drew. Detection runs on the
+/// box first, so each piece of lettering in it gets its own text layer and
+/// only the lettering is cleaned; a box it finds nothing in is read and
+/// cleaned whole.
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn clean_ocr_box(
+    frame: Frame,
+    handle: AppHandle<CefRuntime>,
+    project: State<'_, CurrentProject>,
+) -> Result<JobId, Error> {
+    // The box waits in the processing state for the job; refuse before
+    // leaving it there for a job that will not start.
+    if !handle.state::<Processing>().stops.lock().is_empty() {
+        return Err(anyhow!("another process is already running").into());
+    }
+    let geometry = super::project::Project::geometry_from_frame(frame)?;
+    let (min_x, min_y, max_x, max_y) = geometry.points.iter().fold(
+        (
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ),
+        |(min_x, min_y, max_x, max_y), point| {
+            (
+                min_x.min(point.x),
+                min_y.min(point.y),
+                max_x.max(point.x),
+                max_y.max(point.y),
+            )
+        },
+    );
+    let page = project
+        .project
+        .lock()
+        .await
+        .as_ref()
+        .context("no project is open")?
+        .active_page()
+        .context("the project has no active page")?;
+    *handle.state::<Processing>().text_box.lock() =
+        Some(koharu_pipeline::TextBox { page, geometry });
+    Ok(processing::process(
+        handle.clone(),
+        koharu_pipeline::Scope::Region {
+            page,
+            bounds: koharu_pipeline::Bounds {
+                x: min_x,
+                y: min_y,
+                width: max_x - min_x,
+                height: max_y - min_y,
+            },
+        },
+        koharu_pipeline::Operation::Stages {
+            stages: vec![
+                koharu_pipeline::Stage::Detection,
+                koharu_pipeline::Stage::Ocr,
+                koharu_pipeline::Stage::Translation,
+                koharu_pipeline::Stage::Inpainting,
+            ],
+        },
+        handle.state::<CurrentProject>(),
+        handle.state::<Processing>(),
+        handle.state::<JobChannel>(),
+    )
+    .await?)
+}
+
+#[tauri::command]
+#[specta::specta]
 pub(crate) async fn commit_paint(
     expected_revision: Revision,
     layer: Option<EntityId>,

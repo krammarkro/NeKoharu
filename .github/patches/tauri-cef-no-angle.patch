@@ -1,0 +1,70 @@
+diff --git a/crates/tauri-bundler/src/bundle/linux/appimage/sharun_cef.rs b/crates/tauri-bundler/src/bundle/linux/appimage/sharun_cef.rs
+index 3e94e02..5fcf810 100644
+--- a/crates/tauri-bundler/src/bundle/linux/appimage/sharun_cef.rs
++++ b/crates/tauri-bundler/src/bundle/linux/appimage/sharun_cef.rs
+@@ -152,9 +152,6 @@ pub fn bundle_project(settings: &Settings) -> crate::Result<Vec<PathBuf>> {
+       "chrome_100_percent.pak",
+       "chrome_200_percent.pak",
+       "resources.pak",
+-      // ANGLE support
+-      "libEGL.so",
+-      "libGLESv2.so",
+       // SwANGLE support
+       "libvk_swiftshader.so",
+       "vk_swiftshader_icd.json",
+diff --git a/crates/tauri-bundler/src/bundle/linux/debian.rs b/crates/tauri-bundler/src/bundle/linux/debian.rs
+index d163415..b15943d 100644
+--- a/crates/tauri-bundler/src/bundle/linux/debian.rs
++++ b/crates/tauri-bundler/src/bundle/linux/debian.rs
+@@ -125,9 +125,6 @@ pub fn bundle_project(settings: &Settings) -> crate::Result<Vec<PathBuf>> {
+       "chrome_100_percent.pak",
+       "chrome_200_percent.pak",
+       "resources.pak",
+-      // ANGLE support
+-      "libEGL.so",
+-      "libGLESv2.so",
+       // SwANGLE support
+       "libvk_swiftshader.so",
+       "vk_swiftshader_icd.json",
+diff --git a/crates/tauri-bundler/src/bundle/linux/rpm.rs b/crates/tauri-bundler/src/bundle/linux/rpm.rs
+index 3a800a8..b795ac9 100644
+--- a/crates/tauri-bundler/src/bundle/linux/rpm.rs
++++ b/crates/tauri-bundler/src/bundle/linux/rpm.rs
+@@ -265,9 +265,6 @@ pub fn bundle_project(settings: &Settings) -> crate::Result<Vec<PathBuf>> {
+       "chrome_100_percent.pak",
+       "chrome_200_percent.pak",
+       "resources.pak",
+-      // ANGLE support
+-      "libEGL.so",
+-      "libGLESv2.so",
+       // SwANGLE support
+       "libvk_swiftshader.so",
+       "vk_swiftshader_icd.json",
+diff --git a/crates/tauri-bundler/src/bundle/windows/msi/mod.rs b/crates/tauri-bundler/src/bundle/windows/msi/mod.rs
+index 0e77c99..c296927 100644
+--- a/crates/tauri-bundler/src/bundle/windows/msi/mod.rs
++++ b/crates/tauri-bundler/src/bundle/windows/msi/mod.rs
+@@ -1107,9 +1107,6 @@ fn generate_resource_data(settings: &Settings) -> crate::Result<ResourceDirector
+       // TODO: check if x64 means no arm64
+       "dxil.dll",
+       "dxcompiler.dll",
+-      // ANGLE support
+-      "libEGL.dll",
+-      "libGLESv2.dll",
+       // SwANGLE support
+       "vk_swiftshader.dll",
+       "vk_swiftshader_icd.json",
+diff --git a/crates/tauri-bundler/src/bundle/windows/nsis/mod.rs b/crates/tauri-bundler/src/bundle/windows/nsis/mod.rs
+index 30bca9b..24c295d 100644
+--- a/crates/tauri-bundler/src/bundle/windows/nsis/mod.rs
++++ b/crates/tauri-bundler/src/bundle/windows/nsis/mod.rs
+@@ -861,9 +861,6 @@ fn generate_resource_data(settings: &Settings) -> crate::Result<ResourcesMap> {
+       // TODO: check if x64 means no arm64
+       "dxil.dll",
+       "dxcompiler.dll",
+-      // ANGLE support
+-      "libEGL.dll",
+-      "libGLESv2.dll",
+       // SwANGLE support
+       "vk_swiftshader.dll",
+       "vk_swiftshader_icd.json",

@@ -64,6 +64,7 @@ pub(crate) struct Processing {
     pub(crate) stops: Mutex<HashMap<JobId, StopToken>>,
     pub(crate) jobs: Mutex<HashMap<JobId, Job>>,
     pub(crate) inpainting_mask: Mutex<Option<koharu_pipeline::InpaintingMask>>,
+    pub(crate) text_box: Mutex<Option<koharu_pipeline::TextBox>>,
 }
 
 #[derive(Default)]
@@ -114,6 +115,7 @@ pub(crate) async fn process(
     let pipeline = handle.state::<koharu_pipeline::Pipeline>().inner().clone();
     let task_handle = handle.clone();
     let inpainting_mask = processing.inpainting_mask.lock().take();
+    let text_box = processing.text_box.lock().take();
     drop(tokio::spawn(async move {
         let progress = Arc::new(Mutex::new((0_usize, 0_usize)));
         let progress_handle = task_handle.clone();
@@ -123,6 +125,7 @@ pub(crate) async fn process(
             stop: stop.clone(),
             progress: None,
             inpainting_mask,
+            text_box,
         };
         request.progress = Some(Arc::new(move |event| {
             let update = match event {

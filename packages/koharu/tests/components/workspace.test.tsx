@@ -73,6 +73,32 @@ const paintLayer: Layer = {
   kind: 'paint',
 }
 
+const textLayer: Layer = {
+  type: 'text',
+  id: 'sound-effect',
+  parent: 'text-group',
+  geometry: {
+    points: [
+      { x: 10, y: 20 },
+      { x: 110, y: 20 },
+      { x: 110, y: 70 },
+      { x: 10, y: 70 },
+    ],
+  },
+  angle_degrees: null,
+  visibility: { visible: true, opacity: 1 },
+  content: {
+    id: 'sound-effect-content',
+    source: { text: 'ドン', language: 'ja' },
+    translation: { text: 'BOOM', language: 'en' },
+    role: null,
+    source_region: null,
+  },
+  typography: null,
+  layout: 'paragraph',
+  automatic_region: null,
+}
+
 let nextAnimationFrame = 1
 let animationFrames = new Map<number, FrameRequestCallback>()
 
@@ -111,7 +137,7 @@ function installProject() {
   })
   queryClient.setQueryData(pagesKey, [])
   queryClient.setQueryData(pageKey, page)
-  useKoharuStore.setState({ selectedLayers: [], tool: 'select' })
+  useKoharuStore.setState({ selectedLayers: [], copiedTextLayers: [], tool: 'select' })
   useKoharuStore.setState({
     canvasPage: 'page',
     canvasRevision: 1,
@@ -144,6 +170,7 @@ describe('canvas interaction adapter', () => {
         label: 'Page',
         size: { width: 1000, height: 1000 },
         source_asset: null,
+        chapter_start: false,
         layer_count: 1,
       },
       {
@@ -151,6 +178,7 @@ describe('canvas interaction adapter', () => {
         label: 'Next',
         size: { width: 1000, height: 1000 },
         source_asset: null,
+        chapter_start: false,
         layer_count: 1,
       },
     ])
@@ -208,6 +236,81 @@ describe('canvas interaction adapter', () => {
     input.remove()
   })
 
+  it('copies and pastes selected text layers with keyboard shortcuts', async () => {
+    installProject()
+    queryClient.setQueryData(pageKey, {
+      id: 'page',
+      label: 'Page',
+      size: { width: 1000, height: 1000 },
+      layers: [textLayer],
+      regions: [],
+    })
+    useKoharuStore.setState({ selectedLayers: [textLayer.id] })
+    const paste = vi.spyOn(commands, 'pasteTextLayers').mockResolvedValue(['pasted-layer'])
+    vi.spyOn(commands, 'getProject').mockResolvedValue({
+      name: 'Book',
+      revision: 2,
+      active_page: 'page',
+      can_undo: true,
+      can_redo: false,
+    })
+    vi.spyOn(commands, 'getPages').mockResolvedValue([])
+    vi.spyOn(commands, 'getPage').mockResolvedValue({
+      id: 'page',
+      label: 'Page',
+      size: { width: 1000, height: 1000 },
+      layers: [],
+      regions: [],
+    })
+    renderWorkspace()
+
+    fireEvent.keyDown(window, { key: 'c', ctrlKey: true })
+    expect(useKoharuStore.getState().copiedTextLayers).toEqual([textLayer.id])
+
+    fireEvent.keyDown(window, { key: 'v', ctrlKey: true })
+
+    await waitFor(() => expect(paste).toHaveBeenCalledWith([textLayer.id], 'page'))
+    await waitFor(() => expect(useKoharuStore.getState().selectedLayers).toEqual(['pasted-layer']))
+  })
+
+  it('duplicates selected text layers with Ctrl+D without using the clipboard', async () => {
+    installProject()
+    queryClient.setQueryData(pageKey, {
+      id: 'page',
+      label: 'Page',
+      size: { width: 1000, height: 1000 },
+      layers: [textLayer],
+      regions: [],
+    })
+    useKoharuStore.setState({ selectedLayers: [textLayer.id], copiedTextLayers: [] })
+    const paste = vi.spyOn(commands, 'pasteTextLayers').mockResolvedValue(['duplicated-layer'])
+    vi.spyOn(commands, 'getProject').mockResolvedValue({
+      name: 'Book',
+      revision: 2,
+      active_page: 'page',
+      can_undo: true,
+      can_redo: false,
+    })
+    vi.spyOn(commands, 'getPages').mockResolvedValue([])
+    vi.spyOn(commands, 'getPage').mockResolvedValue({
+      id: 'page',
+      label: 'Page',
+      size: { width: 1000, height: 1000 },
+      layers: [],
+      regions: [],
+    })
+    renderWorkspace()
+
+    fireEvent.keyDown(window, { key: 'd', ctrlKey: true })
+
+    await waitFor(() => expect(paste).toHaveBeenCalledWith([textLayer.id], 'page'))
+    await waitFor(() =>
+      expect(useKoharuStore.getState().selectedLayers).toEqual(['duplicated-layer']),
+    )
+    // Duplicating must not clobber the clipboard.
+    expect(useKoharuStore.getState().copiedTextLayers).toEqual([])
+  })
+
   it('announces WebGPU startup failures and offers recovery', () => {
     installProject()
     canvasState.status = 'error'
@@ -246,6 +349,52 @@ describe('canvas interaction adapter', () => {
       diameter: 48,
       color: [255, 255, 255, 255],
     })
+  })
+
+  it('resizes the brush with Ctrl+Alt drag instead of painting', () => {
+    installProject()
+    useKoharuStore.setState({ tool: 'draw', brush: { diameter: 48, color: '#FFFFFF' } })
+    const commit = vi.spyOn(commands, 'commitPaint')
+    const surface = renderWorkspace()
+
+    fireEvent.pointerDown(surface, {
+      button: 0,
+      pointerId: 9,
+      clientX: 30,
+      clientY: 40,
+      ctrlKey: true,
+      altKey: true,
+    })
+    // The circle's edge follows the pointer, so 20 px of travel adds 40 px.
+    fireEvent.pointerMove(surface, { pointerId: 9, clientX: 50, clientY: 90 })
+    expect(useKoharuStore.getState().brush.diameter).toBe(88)
+    fireEvent.pointerMove(surface, { pointerId: 9, clientX: 20, clientY: 40 })
+    expect(useKoharuStore.getState().brush.diameter).toBe(28)
+    fireEvent.pointerUp(surface, { pointerId: 9, clientX: 20, clientY: 40 })
+
+    expect(useKoharuStore.getState().brush.diameter).toBe(28)
+    expect(canvas.beginStroke).not.toHaveBeenCalled()
+    expect(commit).not.toHaveBeenCalled()
+  })
+
+  it('restores the brush size when a Ctrl+Alt drag is canceled', () => {
+    installProject()
+    useKoharuStore.setState({ tool: 'eraser', brush: { diameter: 48, color: '#FFFFFF' } })
+    const surface = renderWorkspace()
+
+    fireEvent.pointerDown(surface, {
+      button: 0,
+      pointerId: 10,
+      clientX: 30,
+      clientY: 40,
+      ctrlKey: true,
+      altKey: true,
+    })
+    fireEvent.pointerMove(surface, { pointerId: 10, clientX: 60, clientY: 40 })
+    expect(useKoharuStore.getState().brush.diameter).toBe(108)
+    fireEvent.keyDown(window, { key: 'Escape' })
+
+    expect(useKoharuStore.getState().brush.diameter).toBe(48)
   })
 
   it.each([
@@ -500,5 +649,40 @@ describe('canvas interaction adapter', () => {
       height: 60,
       angle_degrees: 0,
     })
+  })
+
+  const ocrFrame = { x: 30, y: 30, width: 100, height: 60, angle_degrees: 0 }
+
+  const dragOcrBox = (surface: HTMLElement) => {
+    fireEvent.pointerDown(surface, { button: 0, pointerId: 15, clientX: 40, clientY: 50 })
+    fireEvent.pointerMove(surface, { pointerId: 15, clientX: 140, clientY: 110 })
+    fireEvent.pointerUp(surface, { pointerId: 15, clientX: 140, clientY: 110 })
+  }
+
+  it('creates an OCR box on drag and selects its text layer', async () => {
+    installProject()
+    useKoharuStore.setState({ tool: 'ocr' })
+    const add = vi
+      .spyOn(commands, 'addOcrBox')
+      .mockResolvedValue({ revision: 4, layer: 'ocr-text' })
+
+    dragOcrBox(renderWorkspace())
+
+    await waitFor(() => expect(add).toHaveBeenCalledOnce())
+    expect(add).toHaveBeenCalledWith(ocrFrame)
+    await waitFor(() => expect(useKoharuStore.getState().selectedLayers).toEqual(['ocr-text']))
+  })
+
+  it('cleans an OCR box through detection instead of adding one box layer', async () => {
+    installProject()
+    useKoharuStore.setState({ tool: 'ocr_clean' })
+    const add = vi.spyOn(commands, 'addOcrBox')
+    const clean = vi.spyOn(commands, 'cleanOcrBox').mockResolvedValue('job')
+
+    dragOcrBox(renderWorkspace())
+
+    await waitFor(() => expect(clean).toHaveBeenCalledOnce())
+    expect(clean).toHaveBeenCalledWith(ocrFrame)
+    expect(add).not.toHaveBeenCalled()
   })
 })

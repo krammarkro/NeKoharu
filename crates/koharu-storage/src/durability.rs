@@ -21,6 +21,25 @@ pub(crate) fn publish(target: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Publishes immutable content-addressed bytes. A file that is already there
+/// holds the same bytes and may be mapped by a reader, so it is never replaced.
+pub(crate) fn publish_new(target: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| crate::Error::invalid("published path has no parent"))?;
+    fs::create_dir_all(parent)?;
+    let mut file = tempfile::NamedTempFile::new_in(parent)?;
+    file.write_all(bytes)?;
+    file.as_file().sync_all()?;
+    match file.persist_noclobber(target) {
+        Ok(_) => {}
+        Err(_) if target.try_exists()? => return Ok(()),
+        Err(error) => return Err(error.error.into()),
+    }
+    sync_parent(target)?;
+    Ok(())
+}
+
 #[cfg(unix)]
 fn sync_parent(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {

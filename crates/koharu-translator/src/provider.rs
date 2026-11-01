@@ -195,6 +195,22 @@ define_providers! {
     }
 }
 
+impl Provider {
+    /// Whether [`crate::chat_endpoint`] serves this provider.
+    #[must_use]
+    pub const fn chat(self) -> bool {
+        matches!(
+            self,
+            Self::OpenAi
+                | Self::Grok
+                | Self::DeepSeek
+                | Self::OpenAiCompatible
+                | Self::OpenRouter
+                | Self::LmStudio
+        )
+    }
+}
+
 impl ProvidersConfig {
     pub fn load() -> anyhow::Result<koharu_config::Config<Self>> {
         koharu_config::load("providers")

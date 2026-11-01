@@ -12,7 +12,7 @@ use koharu_scene::{Edit, EntityId, Generation, Patch, ProducerId, Snapshot};
 pub use detection::KoharuLayoutRFDetrSeg2XLConfig;
 pub use inpainting::{Flux2KleinConfig, RoremMixedConfig};
 
-use crate::{Bounds, ImageCache, InpaintingMask, PipelineConfig, Stage};
+use crate::{Bounds, ImageCache, InpaintingMask, PipelineConfig, Stage, TextBox};
 
 #[derive(Clone)]
 pub(crate) struct StageInput {
@@ -22,6 +22,7 @@ pub(crate) struct StageInput {
     region: Option<Bounds>,
     images: Arc<ImageCache>,
     inpainting_mask: Option<InpaintingMask>,
+    text_box: Option<TextBox>,
 }
 
 impl StageInput {
@@ -32,6 +33,7 @@ impl StageInput {
         region: Option<Bounds>,
         images: Arc<ImageCache>,
         inpainting_mask: Option<InpaintingMask>,
+        text_box: Option<TextBox>,
     ) -> Self {
         Self {
             scene,
@@ -40,7 +42,20 @@ impl StageInput {
             region,
             images,
             inpainting_mask,
+            text_box,
         }
+    }
+
+    /// The text box's outline in page pixels.
+    fn text_box_polygon(&self) -> Option<Vec<(f32, f32)>> {
+        self.text_box.as_ref().map(|text_box| {
+            text_box
+                .geometry
+                .points
+                .iter()
+                .map(|point| (point.x as f32, point.y as f32))
+                .collect()
+        })
     }
 
     pub(crate) fn page(&self) -> EntityId {
@@ -56,6 +71,23 @@ impl StageInput {
             entity,
         )
     }
+}
+
+fn point_in_polygon(point: (f32, f32), polygon: &[(f32, f32)]) -> bool {
+    let mut inside = false;
+    let mut previous = polygon[polygon.len() - 1];
+    for &current in polygon {
+        if (current.1 > point.1) != (previous.1 > point.1) {
+            let intersection_x = (previous.0 - current.0) * (point.1 - current.1)
+                / (previous.1 - current.1)
+                + current.0;
+            if point.0 < intersection_x {
+                inside = !inside;
+            }
+        }
+        previous = current;
+    }
+    inside
 }
 
 #[async_trait]
@@ -82,6 +114,9 @@ impl Stages {
         translator: koharu_translator::Translator,
         device: &koharu_ml::Device,
     ) -> Result<Self> {
+        if config.translation.max_pages_per_request == 0 {
+            anyhow::bail!("maximum pages per translation request must be at least one");
+        }
         Ok(Self {
             detection: detection::Processor::new(config.detection()?, device.clone()),
             ocr: ocr::Processor::new(config.ocr.clone(), device.clone()),
@@ -113,6 +148,14 @@ impl Stages {
 
     pub(crate) async fn process(&self, stage: Stage, input: StageInput) -> Result<Patch> {
         self.processor(stage).process(input).await
+    }
+
+    pub(crate) async fn process_translation(&self, inputs: Vec<StageInput>) -> Result<Patch> {
+        self.translation.process_batch(inputs).await
+    }
+
+    pub(crate) fn translation_batch_size(&self) -> usize {
+        self.translation.batch_size()
     }
 
     pub(crate) fn unload(&self, stage: Stage) -> bool {

@@ -13,7 +13,7 @@ import {
   DialogTitle,
 } from '@koharu/ui/components/dialog'
 
-const author = 'Mayo Takanashi'
+const author = 'A fork by nekojin116; original project by mayocream'
 
 export function AboutDialog({
   open,
@@ -48,7 +48,7 @@ export function AboutDialog({
             <Image src='/icon.png' alt='' width={30} height={30} priority />
           </div>
           <DialogHeader className='min-w-0 gap-1'>
-            <DialogTitle className='text-[15px]'>Koharu</DialogTitle>
+            <DialogTitle className='text-[15px]'>NeKoharu</DialogTitle>
             <DialogDescription className='text-[11px]'>{t('about.description')}</DialogDescription>
           </DialogHeader>
         </div>

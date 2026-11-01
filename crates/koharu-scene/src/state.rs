@@ -822,6 +822,37 @@ impl State {
             .collect()
     }
 
+    /// Every referenced blob once: project-wide blobs, then each page's in
+    /// project order, then relations'. A replica downloads in this order so
+    /// the first pages become complete first.
+    pub(crate) fn blobs_in_page_order(&self) -> Vec<BlobId> {
+        let mut seen = BTreeSet::new();
+        self.project_components
+            .iter()
+            .flat_map(|(_, value)| value.blob_refs.iter().copied())
+            .chain(
+                self.page_order
+                    .iter()
+                    .filter_map(|page| self.pages.get(page))
+                    .flat_map(|page| {
+                        page.entities.values().flat_map(|entity| {
+                            entity
+                                .components
+                                .iter()
+                                .flat_map(|(_, value)| value.blob_refs.iter().copied())
+                        })
+                    }),
+            )
+            .chain(self.relations.values().flat_map(|relation| {
+                relation
+                    .components
+                    .iter()
+                    .flat_map(|(_, value)| value.blob_refs.iter().copied())
+            }))
+            .filter(|id| seen.insert(*id))
+            .collect()
+    }
+
     pub(crate) fn to_checkpoint(&self) -> StoredState {
         StoredState {
             page_order_epoch: self.page_order_epoch,

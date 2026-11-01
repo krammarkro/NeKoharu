@@ -1,6 +1,7 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import {
   act,
+  createEvent,
   fireEvent,
   render as testingRender,
   renderHook,
@@ -14,6 +15,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { TitleBar } from '@/components/app/TitleBar'
 import { WindowControls } from '@/components/app/WindowChrome'
+import { FontPicker } from '@/components/controls/FontPicker'
 import { ActivityCenter } from '@/components/editor/ActivityCenter'
 import { CanvasCommandBar } from '@/components/editor/CanvasCommandBar'
 import { Inspector } from '@/components/editor/Inspector'
@@ -23,6 +25,12 @@ import { StatusBar } from '@/components/editor/StatusBar'
 import { ToolBar } from '@/components/editor/ToolBar'
 import { ProviderPreferences } from '@/components/preferences/ProviderPreferences'
 import { SettingsPage } from '@/components/preferences/SettingsPage'
+import { FONT_FAVORITES_STORAGE_KEY, useFontFavorites } from '@/lib/fontFavorites'
+import {
+  FORK_PREFERENCES_STORAGE_KEY,
+  forkPreferenceDefaults,
+  useForkPreferences,
+} from '@/lib/forkPreferences'
 import {
   fontsKey,
   pageKey,
@@ -36,6 +44,7 @@ import { useKoharuStore } from '@/lib/store'
 import * as canvasRuntime from '@koharu/bridge/canvas'
 import {
   commands,
+  type FontFamily,
   type Layer,
   type PageSummary,
   type Preferences,
@@ -90,8 +99,14 @@ const textLayer: Layer = {
     color: [0, 0, 0, 255],
     stroke_color: [255, 255, 255, 255],
     stroke_width: 0,
+    stroke_method: null,
+    stroke_position: null,
+    stroke_join: null,
+    outer_stroke_color: null,
+    outer_stroke_width: null,
     alignment: 'Center',
     writing_mode: null,
+    line_spacing: null,
   },
   layout: 'paragraph',
   automatic_region: null,
@@ -148,6 +163,8 @@ const preferences: Preferences = {
       generation: { vision: true, reasoning: false },
       target_language: 'en-US',
       instructions: null,
+      combine_pages: false,
+      max_pages_per_request: 5,
     },
     inpainting: { model: 'lama' },
     processor: {},
@@ -209,6 +226,7 @@ function installProject() {
       label: 'Page 1',
       size: { width: 1000, height: 1500 },
       source_asset: 'source',
+      chapter_start: false,
       layer_count: 1,
     },
   ])
@@ -345,7 +363,7 @@ describe('greenfield editor', () => {
       installProject()
       let finishExport: (() => void) | undefined
       const exportProject = vi.spyOn(commands, 'export').mockImplementation(
-        () =>
+        (_format, _pages) =>
           new Promise<null>((resolve) => {
             finishExport = () => resolve(null)
           }),
@@ -363,7 +381,7 @@ describe('greenfield editor', () => {
       fireEvent.click(await screen.findByRole('menuitem', { name: `${format.toUpperCase()}…` }))
 
       expect(await screen.findByRole('status')).toHaveTextContent('Export Project')
-      expect(exportProject).toHaveBeenCalledExactlyOnceWith(format)
+      expect(exportProject).toHaveBeenCalledExactlyOnceWith(format, null)
       await user.click(screen.getByRole('menuitem', { name: 'File' }))
       expect(await screen.findByRole('menuitem', { name: 'Export Project' })).toHaveAttribute(
         'aria-disabled',
@@ -380,6 +398,23 @@ describe('greenfield editor', () => {
       )
     },
   )
+
+  it('offers selected-page export formats when pages are selected', async () => {
+    const user = userEvent.setup()
+    installProject()
+    useKoharuStore.setState({ selectedPages: ['page'] })
+    render(<TitleBar />)
+
+    await user.click(screen.getByRole('menuitem', { name: 'File' }))
+    await user.hover(await screen.findByRole('menuitem', { name: 'Export Project' }))
+    const selectedExport = await screen.findByRole('menuitem', {
+      name: 'Export Selected Pages — PNG…',
+    })
+    expect(selectedExport).not.toHaveAttribute('aria-disabled', 'true')
+
+    act(() => useKoharuStore.setState({ selectedPages: [] }))
+    expect(selectedExport).toHaveAttribute('aria-disabled', 'true')
+  })
 
   it.each([
     { command: 'import', menu: 'Import Pages', choice: 'Files…', pending: 'Importing pages…' },
@@ -441,9 +476,11 @@ describe('greenfield editor', () => {
     await user.click(screen.getByRole('menuitem', { name: 'Help' }))
     await user.click(await screen.findByRole('menuitem', { name: 'About' }))
 
-    expect(await screen.findByRole('heading', { name: 'Koharu' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'NeKoharu' })).toBeInTheDocument()
     expect(await screen.findByText('0.62.0')).toBeInTheDocument()
-    expect(screen.getByText('Mayo Takanashi')).toBeInTheDocument()
+    expect(
+      screen.getByText('A fork by nekojin116; original project by mayocream'),
+    ).toBeInTheDocument()
     expect(nativeGetVersion).toHaveBeenCalledTimes(1)
   })
 
@@ -467,6 +504,249 @@ describe('greenfield editor', () => {
     expect(await screen.findByRole('status')).toHaveTextContent('3 selected')
   })
 
+  it("shows each page's position even when its label differs from the order", () => {
+    installProject()
+    const pages: PageSummary[] = [
+      {
+        id: 'page-1',
+        label: 'Cover',
+        size: { width: 1000, height: 1500 },
+        source_asset: null,
+        chapter_start: false,
+        layer_count: 0,
+      },
+      {
+        id: 'page-2',
+        label: 'Prologue',
+        size: { width: 1000, height: 1500 },
+        source_asset: null,
+        chapter_start: false,
+        layer_count: 0,
+      },
+    ]
+    queryClient.setQueryData(pagesKey, pages)
+    vi.spyOn(commands, 'getPages').mockResolvedValue(pages)
+    render(<PageRail />)
+
+    const items = screen.getAllByRole('article')
+    const badges = items.map((item) => item.querySelector('[data-page-number]')?.textContent)
+    expect(badges).toEqual(['1', '2'])
+    // The number lives in the text column under the label, not over the thumbnail.
+    expect(items[0]!.querySelector('[data-page-number]')?.parentElement).toHaveTextContent(
+      '0 layers',
+    )
+    expect(
+      items[0]!.querySelector('div')?.contains(items[0]!.querySelector('[data-page-number]')),
+    ).toBe(false)
+  })
+
+  it('merges selected adjacent pages in document order with the fork deletion preference', async () => {
+    window.localStorage.removeItem(FORK_PREFERENCES_STORAGE_KEY)
+    useForkPreferences.setState({ preferences: { ...forkPreferenceDefaults } })
+    installProject()
+    const user = userEvent.setup()
+    const merge = vi.spyOn(commands, 'mergePages').mockResolvedValue('merged')
+    const pages: PageSummary[] = ['Page 1', 'Page 2'].map((label, index) => ({
+      id: `page-${index + 1}`,
+      label,
+      size: { width: 1000, height: 1500 },
+      source_asset: null,
+      chapter_start: false,
+      layer_count: 0,
+    }))
+    queryClient.setQueryData(pagesKey, pages)
+    vi.spyOn(commands, 'getPages').mockResolvedValue(pages)
+    useKoharuStore.setState({ selectedPages: ['page-1', 'page-2'] })
+    render(<PageRail />)
+
+    await user.click(screen.getByRole('button', { name: 'Actions for Page 1' }))
+    await user.click(await screen.findByRole('menuitem', { name: 'Merge into spread' }))
+    await waitFor(() => expect(merge).toHaveBeenCalledWith(['page-1', 'page-2'], false))
+
+    useForkPreferences.getState().setPreference('mergeDeleteOriginals', true)
+    useKoharuStore.setState({ selectedPages: ['page-1', 'page-2'] })
+    await user.click(screen.getByRole('button', { name: 'Actions for Page 2' }))
+    await user.click(await screen.findByRole('menuitem', { name: 'Merge into spread' }))
+    await waitFor(() => expect(merge).toHaveBeenLastCalledWith(['page-1', 'page-2'], true))
+    useForkPreferences.setState({ preferences: { ...forkPreferenceDefaults } })
+  })
+
+  it('hides the page numbers when the fork preference is off', () => {
+    useForkPreferences.setState({
+      preferences: { ...forkPreferenceDefaults, showPageNumbers: false },
+    })
+    const pages: PageSummary[] = [
+      {
+        id: 'page-1',
+        label: 'Page 1',
+        size: { width: 1000, height: 1500 },
+        source_asset: null,
+        chapter_start: false,
+        layer_count: 2,
+      },
+    ]
+    queryClient.setQueryData(pagesKey, pages)
+    vi.spyOn(commands, 'getPages').mockResolvedValue(pages)
+    render(<PageRail />)
+
+    const item = screen.getAllByRole('article')[0]!
+    expect(item.querySelector('[data-page-number]')).toBeNull()
+    expect(item).toHaveTextContent('2 layers')
+    useForkPreferences.setState({ preferences: { ...forkPreferenceDefaults } })
+  })
+
+  it.each([
+    { source: 'Page 1', target: 'Page 3', clientY: 25, index: 1, rejectMove: false },
+    { source: 'Page 3', target: 'Page 1', clientY: 75, index: 1, rejectMove: false },
+    { source: 'Page 1', target: 'Page 3', clientY: 25, index: 1, rejectMove: true },
+  ])(
+    'reorders a page into its $target drop position (failure=$rejectMove)',
+    async ({ source, target, clientY, index, rejectMove }) => {
+      installProject()
+      const pages: PageSummary[] = [
+        {
+          id: 'page',
+          label: 'Page 1',
+          size: { width: 1000, height: 1500 },
+          source_asset: 'source',
+          chapter_start: false,
+          layer_count: 1,
+        },
+        {
+          id: 'page-2',
+          label: 'Page 2',
+          size: { width: 1000, height: 1500 },
+          source_asset: null,
+          chapter_start: false,
+          layer_count: 0,
+        },
+        {
+          id: 'page-3',
+          label: 'Page 3',
+          size: { width: 1000, height: 1500 },
+          source_asset: null,
+          chapter_start: false,
+          layer_count: 0,
+        },
+      ]
+      queryClient.setQueryData(pagesKey, pages)
+      const getPages = vi.spyOn(commands, 'getPages').mockResolvedValue(pages)
+      const movePage = vi
+        .spyOn(commands, 'movePage')
+        .mockImplementation(() =>
+          rejectMove
+            ? Promise.reject(new Error('canvas synchronization failed'))
+            : Promise.resolve(null),
+        )
+      const setData = vi.fn()
+      const dataTransfer = {
+        dropEffect: 'none',
+        effectAllowed: 'all',
+        getData: () => '',
+        setData,
+      }
+      render(<PageRail />)
+
+      const sourcePage = screen.getByText(source).closest('article')!
+      const targetPage = screen.getByText(target).closest('article')!
+      getPages.mockClear()
+      vi.spyOn(targetPage, 'getBoundingClientRect').mockReturnValue({
+        top: 0,
+        height: 100,
+      } as DOMRect)
+      fireEvent.dragStart(sourcePage, { dataTransfer })
+      fireEvent.dragOver(targetPage, { clientY, dataTransfer })
+      const dropEvent = createEvent.drop(targetPage, { dataTransfer })
+      Object.defineProperty(dropEvent, 'clientY', { value: clientY })
+      fireEvent(targetPage, dropEvent)
+
+      const movingPage = source === 'Page 1' ? 'page' : 'page-3'
+      expect(dataTransfer.dropEffect).toBe('move')
+      expect(setData).toHaveBeenCalledWith('text/plain', movingPage)
+      await waitFor(() => expect(movePage).toHaveBeenCalledWith(movingPage, index))
+      await waitFor(() => expect(getPages).toHaveBeenCalled())
+    },
+  )
+
+  it('uses the last hovered page when CEF omits the drop event', async () => {
+    installProject()
+    const pages: PageSummary[] = [
+      {
+        id: 'page',
+        label: 'Page 1',
+        size: { width: 1000, height: 1500 },
+        source_asset: 'source',
+        chapter_start: false,
+        layer_count: 1,
+      },
+      {
+        id: 'page-2',
+        label: 'Page 2',
+        size: { width: 1000, height: 1500 },
+        source_asset: null,
+        chapter_start: false,
+        layer_count: 0,
+      },
+    ]
+    queryClient.setQueryData(pagesKey, pages)
+    vi.spyOn(commands, 'getPages').mockResolvedValue(pages)
+    const movePage = vi.spyOn(commands, 'movePage').mockResolvedValue(null)
+    const dataTransfer = { effectAllowed: 'move', setData: vi.fn() }
+    render(<PageRail />)
+    const sourcePage = screen.getByText('Page 1').closest('article')!
+    const targetPage = screen.getByText('Page 2').closest('article')!
+
+    fireEvent.dragStart(sourcePage, { dataTransfer })
+    fireEvent.dragOver(targetPage, { clientY: 0, dataTransfer })
+    fireEvent.dragEnd(sourcePage, { dataTransfer })
+
+    await waitFor(() => expect(movePage).toHaveBeenCalledWith('page', 1))
+  })
+
+  it('marks and unmarks chapter starts from the page actions menu', async () => {
+    const user = userEvent.setup()
+    installProject()
+    let chapterStart = false
+    const page: PageSummary = {
+      id: 'page',
+      label: 'Page 1',
+      size: { width: 1000, height: 1500 },
+      source_asset: 'source',
+      chapter_start: false,
+      layer_count: 1,
+    }
+    const getPages = vi
+      .spyOn(commands, 'getPages')
+      .mockImplementation(async () => [{ ...page, chapter_start: chapterStart }])
+    const setChapterStart = vi
+      .spyOn(commands, 'setPageChapterStart')
+      .mockImplementation(async (_id, next) => {
+        chapterStart = next
+        return null
+      })
+    queryClient.setQueryData(pagesKey, [page])
+    render(<PageRail />)
+
+    await user.click(screen.getByRole('button', { name: 'Actions for Page 1' }))
+    await user.click(await screen.findByRole('menuitem', { name: 'Mark as chapter start' }))
+    await waitFor(() => expect(setChapterStart).toHaveBeenLastCalledWith('page', true))
+    expect(await screen.findByRole('img', { name: 'Chapter start' })).toBeInTheDocument()
+    expect(screen.getByText('Page 1').closest('article')).toHaveAttribute(
+      'data-chapter-start',
+      'true',
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Actions for Page 1' }))
+    await user.click(await screen.findByRole('menuitem', { name: 'Remove chapter start marker' }))
+    await waitFor(() => expect(setChapterStart).toHaveBeenLastCalledWith('page', false))
+    await waitFor(() => expect(getPages).toHaveBeenCalledTimes(2))
+    expect(screen.queryByRole('img', { name: 'Chapter start' })).not.toBeInTheDocument()
+    expect(screen.getByText('Page 1').closest('article')).toHaveAttribute(
+      'data-chapter-start',
+      'false',
+    )
+  })
+
   it('loads page thumbnails into the filmstrip', async () => {
     installProject()
     const thumbnail = vi.spyOn(commands, 'getThumbnail').mockResolvedValue([1])
@@ -477,6 +757,342 @@ describe('greenfield editor', () => {
       'blob:koharu-thumbnail',
     )
     expect(screen.queryByText('01')).not.toBeInTheDocument()
+  })
+
+  it('navigates, previews, and scrolls font choices with the keyboard', async () => {
+    const user = userEvent.setup()
+    const families: FontFamily[] = Array.from({ length: 32 }, (_, index) => {
+      const name = `Font ${String(index + 1).padStart(2, '0')}`
+      return {
+        name,
+        metadata: {
+          primary_script: 'latn',
+          scripts: ['latn'],
+          languages: [],
+          category: null,
+          classifications: [],
+          use_cases: [],
+        },
+        sources: ['system'],
+        faces: [
+          {
+            postscript_name: name.replaceAll(' ', ''),
+            weight: 400,
+            weight_range: null,
+            style: 'normal',
+          },
+        ],
+      }
+    })
+    const getFontPreview = vi.spyOn(commands, 'getFontPreview').mockResolvedValue([1])
+    const onChange = vi.fn()
+    render(<FontPicker value='Font 01' families={families} onChange={onChange} />)
+
+    await user.click(screen.getByTestId('type-font-picker'))
+    const search = screen.getByRole('combobox', { name: 'Search fonts' })
+    const listbox = screen.getByRole('listbox', { name: 'Fonts' })
+    const viewport = listbox.querySelector<HTMLElement>('[data-slot="scroll-area-viewport"]')
+    expect(viewport).not.toBeNull()
+    Object.defineProperties(viewport!, {
+      clientHeight: { configurable: true, value: 248 },
+      scrollHeight: { configurable: true, value: 1400 },
+    })
+    const scrollTo = vi.fn((options: ScrollToOptions) => {
+      viewport!.scrollTop = options.top ?? 0
+      viewport!.dispatchEvent(new Event('scroll'))
+    })
+    Object.defineProperty(viewport!, 'scrollTo', { configurable: true, value: scrollTo })
+    const initialOption = document.getElementById(
+      `${search.getAttribute('aria-controls')}-option-0`,
+    )
+    expect(initialOption).not.toBeNull()
+    fireEvent.pointerMove(initialOption!, { pointerType: 'mouse' })
+
+    for (let index = 0; index < 20; index += 1) {
+      fireEvent.keyDown(search, { key: 'ArrowDown' })
+    }
+
+    const activeOptionId = search.getAttribute('aria-activedescendant')
+    expect(activeOptionId).toBeTruthy()
+    const activeOption = document.getElementById(activeOptionId!)
+    expect(activeOption).toHaveTextContent('Font 21')
+    expect(activeOption).toHaveAttribute('data-highlighted', 'true')
+    await waitFor(() => expect(viewport!.scrollTop).toBeGreaterThan(0))
+    await waitFor(() => expect(getFontPreview).toHaveBeenCalledWith('Font 21'))
+
+    fireEvent.mouseEnter(initialOption!)
+    expect(document.getElementById(activeOptionId!)).toHaveAttribute('data-highlighted', 'true')
+
+    const hoveredOption = document.getElementById(`${listbox.id}-option-18`)
+    expect(hoveredOption).not.toBeNull()
+    fireEvent.pointerMove(hoveredOption!, { pointerType: 'mouse' })
+    expect(search.getAttribute('aria-activedescendant')).toBe(`${listbox.id}-option-18`)
+
+    fireEvent.keyDown(search, { key: 'ArrowDown' })
+    fireEvent.keyDown(search, { key: 'Enter' })
+    expect(onChange).toHaveBeenCalledExactlyOnceWith('Font 20')
+    expect(screen.queryByRole('listbox', { name: 'Fonts' })).not.toBeInTheDocument()
+  })
+
+  it('favorites fonts, lists them first under a header, and persists the choice', async () => {
+    window.localStorage.removeItem(FONT_FAVORITES_STORAGE_KEY)
+    useFontFavorites.setState({ favorites: [] })
+    const user = userEvent.setup()
+    const families: FontFamily[] = ['Font 01', 'Font 02', 'Font 03'].map((name) => ({
+      name,
+      metadata: {
+        primary_script: 'latn',
+        scripts: ['latn'],
+        languages: [],
+        category: null,
+        classifications: [],
+        use_cases: [],
+      },
+      sources: ['system'],
+      faces: [
+        {
+          postscript_name: name.replaceAll(' ', ''),
+          weight: 400,
+          weight_range: null,
+          style: 'normal',
+        },
+      ],
+    }))
+    vi.spyOn(commands, 'getFontPreview').mockResolvedValue([1])
+    render(<FontPicker value='' families={families} onChange={vi.fn()} />)
+
+    await user.click(screen.getByTestId('type-font-picker'))
+    expect(screen.queryByText('Favorites')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Add Font 02 to favorites' }))
+    expect(useFontFavorites.getState().favorites).toEqual(['Font 02'])
+    expect(JSON.parse(window.localStorage.getItem(FONT_FAVORITES_STORAGE_KEY) ?? '')).toEqual([
+      'Font 02',
+    ])
+
+    // The favorite pins above the remaining fonts under its own header.
+    expect(screen.getByText('Favorites')).toBeInTheDocument()
+    expect(screen.getByText('All fonts')).toBeInTheDocument()
+    const rows = screen.getAllByRole('option')
+    expect(rows.map((row) => row.getAttribute('aria-label'))).toEqual([
+      'Font 02, System',
+      'Font 01, System',
+      'Font 03, System',
+    ])
+
+    await user.click(screen.getByRole('button', { name: 'Remove Font 02 from favorites' }))
+    expect(useFontFavorites.getState().favorites).toEqual([])
+    expect(screen.queryByText('Favorites')).not.toBeInTheDocument()
+  })
+
+  it('applies keyboard font previews to the selected text while browsing', async () => {
+    installProject()
+    const setTypography = vi.spyOn(commands, 'setTypography').mockResolvedValue(null)
+    queryClient.setQueryData(
+      fontsKey,
+      ['Arial', 'Noto Sans'].map((name) => ({
+        name,
+        metadata: {
+          primary_script: 'latn',
+          scripts: ['latn'],
+          languages: ['en'],
+          category: 'SANS_SERIF',
+          classifications: ['sans-serif'],
+          use_cases: ['body-text'],
+        },
+        sources: ['system'],
+        faces: [
+          {
+            postscript_name: name.replaceAll(' ', ''),
+            weight: 400,
+            weight_range: null,
+            style: 'normal',
+          },
+        ],
+      })),
+    )
+    render(<Inspector />)
+
+    await userEvent.setup().click(screen.getByTestId('type-font-picker'))
+    const search = screen.getByRole('combobox', { name: 'Search fonts' })
+    fireEvent.keyDown(search, { key: 'ArrowUp' })
+    fireEvent.keyDown(search, { key: 'ArrowUp' })
+
+    await waitFor(() =>
+      expect(setTypography).toHaveBeenCalledWith([
+        expect.objectContaining({
+          layer: 'element',
+          typography: expect.objectContaining({ preferred_font: 'Arial' }),
+        }),
+      ]),
+    )
+    const hoveredOption = screen.getByRole('option', { name: /Noto Sans/ })
+    fireEvent.pointerMove(hoveredOption!, { pointerType: 'mouse' })
+
+    await waitFor(() =>
+      expect(setTypography).toHaveBeenLastCalledWith([
+        expect.objectContaining({
+          layer: 'element',
+          typography: expect.objectContaining({ preferred_font: 'Noto Sans' }),
+        }),
+      ]),
+    )
+  })
+
+  it('navigates between pages with the arrow keys without wrapping or interrupting text input', async () => {
+    installProject()
+    const pages = [
+      { id: 'page', label: 'Page 1', size: { width: 1000, height: 1500 }, layers: [], regions: [] },
+      {
+        id: 'page-2',
+        label: 'Page 2',
+        size: { width: 1000, height: 1500 },
+        layers: [],
+        regions: [],
+      },
+      {
+        id: 'page-3',
+        label: 'Page 3',
+        size: { width: 1000, height: 1500 },
+        layers: [],
+        regions: [],
+      },
+    ]
+    queryClient.setQueryData(
+      pagesKey,
+      pages.map((page) => ({
+        id: page.id,
+        label: page.label,
+        size: page.size,
+        source_asset: null,
+        chapter_start: false,
+        layer_count: 0,
+      })),
+    )
+    vi.spyOn(canvasRuntime, 'showCanvasPage').mockReturnValue(false)
+    const selectPage = vi.spyOn(commands, 'selectPage').mockImplementation(async (id) => ({
+      project: {
+        name: 'Book',
+        revision: 1,
+        active_page: id,
+        can_undo: true,
+        can_redo: false,
+      },
+      page: pages.find((page) => page.id === id)!,
+    }))
+    render(<PageRail />)
+
+    fireEvent.keyDown(window, { key: 'ArrowLeft' })
+    expect(selectPage).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Filter pages' }), {
+      key: 'ArrowRight',
+    })
+    expect(selectPage).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(window, { key: 'ArrowRight' })
+    await waitFor(() => expect(selectPage).toHaveBeenLastCalledWith('page-2'))
+    await waitFor(() =>
+      expect(queryClient.getQueryData<ProjectInfo>(projectKey)?.active_page).toBe('page-2'),
+    )
+
+    fireEvent.keyDown(window, { key: 'ArrowRight' })
+    await waitFor(() => expect(selectPage).toHaveBeenLastCalledWith('page-3'))
+    await waitFor(() =>
+      expect(queryClient.getQueryData<ProjectInfo>(projectKey)?.active_page).toBe('page-3'),
+    )
+
+    fireEvent.keyDown(window, { key: 'ArrowRight' })
+    expect(selectPage).toHaveBeenCalledTimes(2)
+
+    fireEvent.keyDown(window, { key: 'ArrowLeft' })
+    await waitFor(() => expect(selectPage).toHaveBeenLastCalledWith('page-2'))
+
+    // A/D and PageUp/PageDown turn pages too, but not while typing.
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Filter pages' }), { key: 'd' })
+    expect(selectPage).toHaveBeenCalledTimes(3)
+
+    fireEvent.keyDown(window, { key: 'd' })
+    await waitFor(() => expect(selectPage).toHaveBeenLastCalledWith('page-3'))
+    await waitFor(() =>
+      expect(queryClient.getQueryData<ProjectInfo>(projectKey)?.active_page).toBe('page-3'),
+    )
+
+    fireEvent.keyDown(window, { key: 'PageUp' })
+    await waitFor(() => expect(selectPage).toHaveBeenLastCalledWith('page-2'))
+    await waitFor(() =>
+      expect(queryClient.getQueryData<ProjectInfo>(projectKey)?.active_page).toBe('page-2'),
+    )
+
+    fireEvent.keyDown(window, { key: 'A' })
+    await waitFor(() => expect(selectPage).toHaveBeenLastCalledWith('page'))
+    await waitFor(() =>
+      expect(queryClient.getQueryData<ProjectInfo>(projectKey)?.active_page).toBe('page'),
+    )
+
+    fireEvent.keyDown(window, { key: 'PageDown' })
+    await waitFor(() => expect(selectPage).toHaveBeenLastCalledWith('page-2'))
+  })
+
+  it('scrolls the page rail to the active page during keyboard navigation', async () => {
+    installProject()
+    const pages = Array.from({ length: 31 }, (_, index) => ({
+      id: index === 0 ? 'page' : `page-${index}`,
+      label: `Page ${index + 1}`,
+      size: { width: 1000, height: 1500 },
+      layers: [],
+      regions: [],
+    }))
+    queryClient.setQueryData(
+      pagesKey,
+      pages.map((page) => ({
+        id: page.id,
+        label: page.label,
+        size: page.size,
+        source_asset: null,
+        chapter_start: false,
+        layer_count: 0,
+      })),
+    )
+    vi.spyOn(canvasRuntime, 'showCanvasPage').mockReturnValue(false)
+    vi.spyOn(commands, 'selectPage').mockImplementation(async (id) => ({
+      project: {
+        name: 'Book',
+        revision: 1,
+        active_page: id,
+        can_undo: true,
+        can_redo: false,
+      },
+      page: pages.find((page) => page.id === id)!,
+    }))
+    render(<PageRail />)
+
+    const viewport = document.querySelector<HTMLElement>('[data-slot="scroll-area-viewport"]')
+    expect(viewport).not.toBeNull()
+    Object.defineProperties(viewport!, {
+      clientHeight: { configurable: true, value: 600 },
+      scrollHeight: { configurable: true, value: 3000 },
+    })
+    const scrollTo = vi.fn((options: ScrollToOptions) => {
+      viewport!.scrollTop = options.top ?? 0
+      viewport!.dispatchEvent(new Event('scroll'))
+    })
+    Object.defineProperty(viewport!, 'scrollTo', { configurable: true, value: scrollTo })
+
+    for (let index = 0; index < 20; index += 1) {
+      fireEvent.keyDown(window, { key: 'ArrowRight' })
+    }
+
+    await waitFor(() =>
+      expect(queryClient.getQueryData<ProjectInfo>(projectKey)?.active_page).toBe('page-20'),
+    )
+    await waitFor(() =>
+      expect(scrollTo.mock.calls.some(([options]) => (options.top ?? 0) > 0)).toBe(true),
+    )
+    expect(viewport!.scrollTop).toBeGreaterThan(0)
+    await waitFor(() =>
+      expect(screen.getByText('Page 21').closest('article')).toHaveAttribute('data-active', 'true'),
+    )
   })
 
   it('keeps rapid page switches on the latest native selection', async () => {
@@ -505,6 +1121,7 @@ describe('greenfield editor', () => {
         label: page.label,
         size: page.size,
         source_asset: null,
+        chapter_start: false,
         layer_count: 0,
       })),
     )
@@ -569,6 +1186,7 @@ describe('greenfield editor', () => {
         label: 'Page 2',
         size: { width: 1000, height: 1500 },
         source_asset: null,
+        chapter_start: false,
         layer_count: 0,
       },
     ])
@@ -607,6 +1225,7 @@ describe('greenfield editor', () => {
         label: page.label,
         size: page.size,
         source_asset: null,
+        chapter_start: false,
         layer_count: 0,
       },
     ])
@@ -640,6 +1259,7 @@ describe('greenfield editor', () => {
         label: page.label,
         size: page.size,
         source_asset: null,
+        chapter_start: false,
         layer_count: 0,
       },
     ])
@@ -669,6 +1289,7 @@ describe('greenfield editor', () => {
   it('switches tools and applies typography from the contextual inspector', async () => {
     const user = userEvent.setup()
     installProject()
+    useKoharuStore.setState({ layerFontSizes: { element: 17.25 } })
     const setTypography = vi.spyOn(commands, 'setTypography').mockResolvedValue(null)
     render(
       <TooltipProvider>
@@ -679,12 +1300,21 @@ describe('greenfield editor', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Brush' }))
     expect(useKoharuStore.getState().tool).toBe('draw')
+    fireEvent.click(screen.getByRole('button', { name: 'OCR' }))
+    expect(useKoharuStore.getState().tool).toBe('ocr')
     fireEvent.click(screen.getByRole('button', { name: 'Text' }))
     expect(screen.getByTestId('type-inspector')).toBeInTheDocument()
     expect(screen.getByTestId('type-font-picker')).toHaveTextContent('Noto Sans')
-    expect(screen.getByTestId('type-size')).toHaveValue('')
-    expect(screen.getByTestId('type-size')).toHaveAttribute('placeholder', 'Auto')
+    expect(screen.getByTestId('type-size')).toHaveValue('17.3')
     expect(screen.getByRole('combobox', { name: 'Text direction' })).toHaveTextContent('Auto')
+    await user.click(screen.getByRole('button', { name: 'Increase font size' }))
+    await waitFor(() =>
+      expect(setTypography).toHaveBeenCalledWith([
+        expect.objectContaining({
+          typography: expect.objectContaining({ size: 18.3, auto_fit: false }),
+        }),
+      ]),
+    )
     await user.clear(screen.getByTestId('type-size'))
     await user.type(screen.getByTestId('type-size'), '18')
     await user.tab()
@@ -749,6 +1379,39 @@ describe('greenfield editor', () => {
     expect(useKoharuStore.getState().brush.diameter).toBe(49)
   })
 
+  it('selects the cleanup layer when choosing the brush or eraser tool', async () => {
+    const user = userEvent.setup()
+    installProject()
+    queryClient.setQueryData(pageKey, (page: { layers: Layer[] }) => ({
+      ...page,
+      layers: [
+        ...page.layers,
+        {
+          type: 'raster',
+          id: 'cleanup',
+          parent: 'page',
+          visibility: { visible: true, opacity: 1 },
+          image: null,
+          name: 'Cleanup',
+          kind: 'cleanup',
+        },
+      ],
+    }))
+    render(
+      <TooltipProvider>
+        <ToolBar />
+      </TooltipProvider>,
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Eraser' }))
+    expect(useKoharuStore.getState().tool).toBe('eraser')
+    expect(useKoharuStore.getState().selectedLayers).toEqual(['cleanup'])
+
+    await user.click(screen.getByRole('button', { name: 'Brush' }))
+    expect(useKoharuStore.getState().tool).toBe('draw')
+    expect(useKoharuStore.getState().selectedLayers).toEqual(['cleanup'])
+  })
+
   it('uses the border color well to enable and disable the border', async () => {
     const user = userEvent.setup()
     installProject()
@@ -782,6 +1445,85 @@ describe('greenfield editor', () => {
             stroke_color: [255, 0, 0, 255],
             stroke_width: 1.5,
           }),
+        }),
+      ]),
+    )
+  })
+
+  it('gates the second outline on the first and can enable it by width', async () => {
+    const user = userEvent.setup()
+    installProject()
+    const setTypography = vi.spyOn(commands, 'setTypography').mockResolvedValue(null)
+    render(<Inspector />)
+
+    expect(screen.getByRole('button', { name: 'Second border color' })).toBeDisabled()
+    expect(screen.getByRole('textbox', { name: 'Second border width' })).toBeDisabled()
+
+    act(() => {
+      queryClient.setQueryData(pageKey, {
+        id: 'page',
+        label: 'Page 1',
+        size: { width: 1000, height: 1500 },
+        layers: [{ ...textLayer, typography: { ...textLayer.typography!, stroke_width: 4 } }],
+        regions: [],
+      })
+    })
+    await waitFor(() =>
+      expect(screen.getByRole('textbox', { name: 'Second border width' })).toBeEnabled(),
+    )
+    await user.click(screen.getByRole('button', { name: 'Increase second border width' }))
+    await waitFor(() =>
+      expect(setTypography).toHaveBeenCalledWith([
+        expect.objectContaining({
+          layer: 'element',
+          typography: expect.objectContaining({ stroke_width: 4, outer_stroke_width: 3.5 }),
+        }),
+      ]),
+    )
+  })
+
+  it('enables and clears the second outline without changing the first', async () => {
+    const user = userEvent.setup()
+    installProject()
+    const layer = {
+      ...textLayer,
+      typography: { ...textLayer.typography!, stroke_width: 4 },
+    }
+    queryClient.setQueryData(pageKey, {
+      id: 'page',
+      label: 'Page 1',
+      size: { width: 1000, height: 1500 },
+      layers: [layer],
+      regions: [],
+    })
+    const setTypography = vi.spyOn(commands, 'setTypography').mockResolvedValue(null)
+    render(<Inspector />)
+
+    await user.click(screen.getByRole('button', { name: 'Second border color' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Hex color code' }), {
+      target: { value: '#FF0000' },
+    })
+    await waitFor(() =>
+      expect(setTypography).toHaveBeenCalledWith([
+        expect.objectContaining({
+          layer: 'element',
+          typography: expect.objectContaining({
+            stroke_color: [255, 255, 255, 255],
+            stroke_width: 4,
+            outer_stroke_color: [255, 0, 0, 255],
+            outer_stroke_width: 3,
+          }),
+        }),
+      ]),
+    )
+
+    setTypography.mockClear()
+    await user.click(screen.getByRole('button', { name: 'Transparent' }))
+    await waitFor(() =>
+      expect(setTypography).toHaveBeenCalledWith([
+        expect.objectContaining({
+          layer: 'element',
+          typography: expect.objectContaining({ stroke_width: 4, outer_stroke_width: 0 }),
         }),
       ]),
     )
@@ -1389,6 +2131,31 @@ describe('greenfield editor', () => {
         preferences.typesetting,
       ),
     )
+    const combinePages = screen.getByRole('switch', { name: 'Combine pages in one request' })
+    await user.click(combinePages)
+    expect(combinePages).toBeChecked()
+    await waitFor(() =>
+      expect(save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          translation: expect.objectContaining({ combine_pages: true }),
+        }),
+        preferences.providers,
+        preferences.typesetting,
+      ),
+    )
+    save.mockClear()
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Maximum pages per request' }), {
+      target: { value: '3' },
+    })
+    await waitFor(() =>
+      expect(save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          translation: expect.objectContaining({ max_pages_per_request: 3 }),
+        }),
+        preferences.providers,
+        preferences.typesetting,
+      ),
+    )
     expect(screen.getByLabelText('Translation model')).toHaveTextContent('Gemma 4 E2B Instruct')
     await user.click(screen.getByLabelText('Translation model'))
     const modelSearch = screen.getByRole('textbox', { name: 'Search models' })
@@ -1734,6 +2501,60 @@ describe('greenfield editor', () => {
     )
   })
 
+  it('toggles NeKoharu fork features from their own settings tab', async () => {
+    window.localStorage.removeItem(FORK_PREFERENCES_STORAGE_KEY)
+    useForkPreferences.setState({ preferences: { ...forkPreferenceDefaults } })
+    installProject()
+    const user = userEvent.setup()
+    useKoharuStore.setState({ settingsOpen: true })
+    render(
+      <ThemeProvider attribute='class'>
+        <SettingsPage />
+      </ThemeProvider>,
+    )
+
+    await user.click(screen.getByRole('button', { name: 'NeKoharu Features' }))
+    expect(screen.getByRole('heading', { level: 2, name: 'NeKoharu Features' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('switch', { name: 'Delete original pages after merging' }))
+    expect(useForkPreferences.getState().preferences.mergeDeleteOriginals).toBe(true)
+    expect(JSON.parse(window.localStorage.getItem(FORK_PREFERENCES_STORAGE_KEY) ?? '')).toEqual({
+      mergeDeleteOriginals: true,
+      showPageNumbers: true,
+      colorTheme: 'koharu',
+      interfaceAnimations: true,
+    })
+
+    await user.click(screen.getByRole('switch', { name: 'Show page numbers' }))
+    expect(useForkPreferences.getState().preferences.showPageNumbers).toBe(false)
+    useForkPreferences.setState({ preferences: { ...forkPreferenceDefaults } })
+  })
+
+  it('applies and remembers the appearance chosen in settings', async () => {
+    window.localStorage.removeItem(FORK_PREFERENCES_STORAGE_KEY)
+    useForkPreferences.setState({ preferences: { ...forkPreferenceDefaults } })
+    const user = userEvent.setup()
+    useKoharuStore.setState({ settingsOpen: true })
+    render(
+      <ThemeProvider attribute='class'>
+        <SettingsPage />
+      </ThemeProvider>,
+    )
+
+    expect(document.documentElement.dataset.motion).toBe('full')
+    await user.click(screen.getByRole('switch', { name: 'Interface animations' }))
+    expect(document.documentElement.dataset.motion).toBe('still')
+
+    expect(document.documentElement.dataset.palette).toBe('koharu')
+    await user.click(screen.getByRole('radio', { name: 'AniSwipe' }))
+    expect(screen.getByRole('radio', { name: 'AniSwipe' })).toHaveAttribute('aria-checked', 'true')
+    expect(document.documentElement.dataset.palette).toBe('aniswipe')
+    expect(
+      JSON.parse(window.localStorage.getItem(FORK_PREFERENCES_STORAGE_KEY) ?? ''),
+    ).toMatchObject({ colorTheme: 'aniswipe', interfaceAnimations: false })
+    useForkPreferences.setState({ preferences: { ...forkPreferenceDefaults } })
+  })
+
   it('shows model resources in the left sidebar footer', () => {
     useKoharuStore.setState({
       resources: {
@@ -1817,6 +2638,7 @@ describe('greenfield editor', () => {
         label: 'cover.png',
         size: { width: 1000, height: 1500 },
         source_asset: 'source',
+        chapter_start: false,
         layer_count: 1,
       },
     ])

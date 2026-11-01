@@ -2,6 +2,7 @@
 
 import {
   ArrowLeft,
+  Check,
   Cpu,
   KeyRound,
   Keyboard,
@@ -9,6 +10,7 @@ import {
   Monitor,
   Moon,
   Palette,
+  Sparkles,
   Sun,
   Type,
 } from 'lucide-react'
@@ -16,6 +18,7 @@ import { useTheme } from 'next-themes'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { FeaturesPreferences } from '@/components/preferences/FeaturesPreferences'
 import { PipelinePreferences } from '@/components/preferences/PipelinePreferences'
 import {
   PreferencePage,
@@ -26,6 +29,7 @@ import { ProviderPreferences } from '@/components/preferences/ProviderPreference
 import { TranslationPreferences } from '@/components/preferences/TranslationPreferences'
 import { TypesettingPreferences } from '@/components/preferences/TypesettingPreferences'
 import { refreshPreferences, refreshTranslationModels, savePreferences } from '@/lib/backend'
+import { colorThemes, useForkPreferences } from '@/lib/forkPreferences'
 import { supportedLanguages } from '@/lib/i18n'
 import { receivePreferences, useKoharuStore, type ShortcutAction } from '@/lib/store'
 import {
@@ -44,6 +48,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@koharu/ui/components/select'
+import { Switch } from '@koharu/ui/components/switch'
 
 const tabs = [
   ['appearance', Palette],
@@ -51,6 +56,7 @@ const tabs = [
   ['providers', KeyRound],
   ['translation', Languages],
   ['typesetting', Type],
+  ['features', Sparkles],
   ['shortcuts', Keyboard],
 ] as const
 type Tab = (typeof tabs)[number][0]
@@ -230,6 +236,7 @@ export function SettingsPage() {
               ) : (
                 <LoadingPreferences />
               ))}
+            {tab === 'features' && <FeaturesPreferences />}
             {tab === 'shortcuts' && <ShortcutPreferences />}
           </div>
         </ScrollArea>
@@ -241,6 +248,9 @@ export function SettingsPage() {
 function AppearancePreferences() {
   const { theme, setTheme } = useTheme()
   const { t, i18n } = useTranslation()
+  const colorTheme = useForkPreferences((state) => state.preferences.colorTheme)
+  const interfaceAnimations = useForkPreferences((state) => state.preferences.interfaceAnimations)
+  const setPreference = useForkPreferences((state) => state.setPreference)
   const themes = [
     ['light', Sun],
     ['dark', Moon],
@@ -273,6 +283,64 @@ function AppearancePreferences() {
             ))}
           </div>
         </PreferenceRow>
+        <PreferenceRow
+          title={t('settings.appearance.colorTheme')}
+          description={t('settings.appearance.colorThemeDescription')}
+          align='start'
+        >
+          <div
+            role='radiogroup'
+            aria-label={t('settings.appearance.colorTheme')}
+            className='grid grid-cols-2 gap-2'
+          >
+            {colorThemes.map((id) => (
+              <Button
+                key={id}
+                type='button'
+                variant='ghost'
+                role='radio'
+                aria-checked={colorTheme === id}
+                data-active={colorTheme === id}
+                className='h-auto flex-col items-stretch gap-2 rounded-xl border border-border p-1.5 text-left hover:bg-foreground/[0.04] data-[active=true]:border-primary data-[active=true]:ring-2 data-[active=true]:ring-primary/20'
+                onClick={() => setPreference('colorTheme', id)}
+              >
+                {/* The preview carries the theme itself, so it shows the real tokens in the current mode. */}
+                <span
+                  data-palette={id}
+                  aria-hidden='true'
+                  className='grid h-16 grid-cols-[14px_1fr] grid-rows-[10px_1fr] overflow-hidden rounded-lg border border-border bg-[var(--surface-titlebar)]'
+                >
+                  <span className='col-span-2' />
+                  <span />
+                  <span className='flex flex-col gap-1.5 rounded-tl-md bg-[var(--surface-canvas)] p-2'>
+                    <span className='h-1.5 w-12 rounded-full bg-foreground/70' />
+                    <span className='h-1.5 w-8 rounded-full bg-muted-foreground/50' />
+                    <span className='mt-auto flex gap-1'>
+                      <span className='h-3 w-9 rounded-sm bg-primary' />
+                      <span className='h-3 w-6 rounded-sm bg-accent' />
+                    </span>
+                  </span>
+                </span>
+                <span className='flex items-center justify-between gap-2 px-1 pb-0.5 text-[11px] font-medium text-foreground'>
+                  <span className='truncate'>{t(`settings.appearance.colorThemes.${id}`)}</span>
+                  {colorTheme === id && <Check className='size-3.5 shrink-0 text-primary' />}
+                </span>
+              </Button>
+            ))}
+          </div>
+        </PreferenceRow>
+        <PreferenceRow
+          title={t('settings.appearance.animations')}
+          description={t('settings.appearance.animationsDescription')}
+        >
+          <div className='flex h-8 items-center justify-end'>
+            <Switch
+              aria-label={t('settings.appearance.animations')}
+              checked={interfaceAnimations}
+              onCheckedChange={(enabled) => setPreference('interfaceAnimations', enabled)}
+            />
+          </div>
+        </PreferenceRow>
         <PreferenceRow title={t('settings.appearance.language')}>
           <Select
             value={i18n.language}
@@ -302,9 +370,22 @@ function ShortcutPreferences() {
   const { t } = useTranslation()
   const shortcuts = useKoharuStore((state) => state.shortcuts)
   const setShortcut = useKoharuStore((state) => state.setShortcut)
+  const row = (action: ShortcutAction) => (
+    <PreferenceRow key={action} title={t(shortcutKeys[action])}>
+      <Input
+        aria-label={t('settings.shortcuts.inputLabel', { action: t(shortcutKeys[action]) })}
+        maxLength={1}
+        value={shortcuts[action]}
+        className='ml-auto h-8 w-14 text-center text-[12px] uppercase'
+        onChange={(event) => setShortcut(action, event.currentTarget.value)}
+      />
+    </PreferenceRow>
+  )
   const actions: ShortcutAction[] = [
     'select',
     'text',
+    'ocr',
+    'ocr_clean',
     'draw',
     'eraser',
     'color_picker',
@@ -318,17 +399,10 @@ function ShortcutPreferences() {
       description={t('settings.shortcuts.description')}
     >
       <PreferenceSection title={t('settings.shortcuts.tools')}>
-        {actions.map((action) => (
-          <PreferenceRow key={action} title={t(shortcutKeys[action])}>
-            <Input
-              aria-label={t('settings.shortcuts.inputLabel', { action: t(shortcutKeys[action]) })}
-              maxLength={1}
-              value={shortcuts[action]}
-              className='ml-auto h-8 w-14 text-center text-[12px] uppercase'
-              onChange={(event) => setShortcut(action, event.currentTarget.value)}
-            />
-          </PreferenceRow>
-        ))}
+        {actions.map(row)}
+      </PreferenceSection>
+      <PreferenceSection title={t('settings.shortcuts.pages')}>
+        {(['previous_page', 'next_page'] as const).map(row)}
       </PreferenceSection>
     </PreferencePage>
   )
@@ -342,10 +416,14 @@ function LoadingPreferences() {
 const shortcutKeys: Record<ShortcutAction, string> = {
   select: 'tools.select',
   text: 'tools.text',
+  ocr: 'tools.ocr',
+  ocr_clean: 'tools.ocr_clean',
   draw: 'tools.draw',
   eraser: 'tools.eraser',
   color_picker: 'tools.color_picker',
   remove: 'tools.remove',
   pan: 'tools.pan',
   fit: 'canvas.fit',
+  previous_page: 'settings.shortcuts.previousPage',
+  next_page: 'settings.shortcuts.nextPage',
 }

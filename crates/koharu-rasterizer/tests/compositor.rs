@@ -9,6 +9,134 @@ use koharu_rasterizer::{
 };
 use vello::Scene;
 
+fn contour_stroke_frame(
+    position: koharu_rasterizer::StrokePosition,
+    background: bool,
+) -> koharu_rasterizer::Frame {
+    use koharu_rasterizer::{
+        FillRule, PathElement, PreparedPath, PreparedScene, PreparedSceneCommand,
+        PreparedStrokePath, StrokeJoin,
+    };
+    let rectangle = |left, top, right, bottom, color| PreparedPath {
+        fill: FillRule::NonZero,
+        transform: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        color,
+        elements: vec![
+            PathElement::MoveTo([left, top]),
+            PathElement::LineTo([right, top]),
+            PathElement::LineTo([right, bottom]),
+            PathElement::LineTo([left, bottom]),
+            PathElement::Close,
+        ],
+    };
+    let mut commands = Vec::new();
+    if background {
+        commands.push(PreparedSceneCommand::FillPath(rectangle(
+            0.0,
+            0.0,
+            64.0,
+            64.0,
+            [0, 0, 255, 255],
+        )));
+    }
+    commands.push(PreparedSceneCommand::StrokePath(PreparedStrokePath {
+        path: rectangle(16.0, 16.0, 48.0, 48.0, [255, 0, 0, 255]),
+        width: 4.0,
+        position,
+        join: StrokeJoin::Round,
+    }));
+    PreparedFrameBundle {
+        frame: PreparedFrame {
+            revision: Revision::new(1),
+            page: LayerId::from_bytes([1; 16]),
+            width: 64,
+            height: 64,
+            origin: (0, 0),
+            normalization: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            layers: vec![PreparedLayer {
+                id: LayerId::from_bytes([2; 16]),
+                geometry: vec![
+                    Point { x: 0.0, y: 0.0 },
+                    Point { x: 64.0, y: 0.0 },
+                    Point { x: 64.0, y: 64.0 },
+                    Point { x: 0.0, y: 64.0 },
+                ],
+                bounds: Bounds {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 64.0,
+                    height: 64.0,
+                },
+                local_bounds: Bounds {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 64.0,
+                    height: 64.0,
+                },
+                presentation: Presentation {
+                    visible: true,
+                    opacity: 1.0,
+                },
+                kind: LayerKind::Text,
+                placement: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                content: PreparedContent::Vector(PreparedScene { commands }),
+                element_frame: None,
+            }],
+        },
+        resources: vec![],
+    }
+    .into_frame_with_raster_sources(&HashMap::new())
+    .unwrap()
+}
+
+#[test]
+fn contour_stroke_alignment_preserves_transparency_and_background() {
+    use koharu_rasterizer::StrokePosition;
+    let rasterizer = Rasterizer::new().unwrap();
+    for (position, painted, clear) in [
+        (StrokePosition::Outside, 13, 17),
+        (StrokePosition::Center, 15, 19),
+        (StrokePosition::Inside, 17, 15),
+    ] {
+        let image = rasterizer
+            .rasterize(
+                &contour_stroke_frame(position, false),
+                RasterOptions::default(),
+            )
+            .unwrap()
+            .image;
+        assert_eq!(
+            image.get_pixel(painted, 32).0,
+            [255, 0, 0, 255],
+            "{position:?} painted region"
+        );
+        assert_eq!(
+            image.get_pixel(clear, 32).0[3],
+            0,
+            "{position:?} clear region"
+        );
+        assert_eq!(
+            image.get_pixel(32, 32).0[3],
+            0,
+            "{position:?} transparent fill"
+        );
+    }
+    let image = rasterizer
+        .rasterize(
+            &contour_stroke_frame(StrokePosition::Outside, true),
+            RasterOptions::default(),
+        )
+        .unwrap()
+        .image;
+    assert_eq!(image.get_pixel(13, 32).0, [255, 0, 0, 255]);
+    assert_eq!(
+        image.get_pixel(17, 32).0,
+        [0, 0, 255, 255],
+        "outside border must not erase underlying content"
+    );
+    assert_eq!(image.get_pixel(32, 32).0, [0, 0, 255, 255]);
+}
+
 #[test]
 fn linear_filtering_does_not_add_borders_to_any_raster_layer() {
     let background =

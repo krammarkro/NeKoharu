@@ -110,7 +110,6 @@ async fn built_in_component_schema_revisions_are_explicit() {
     assert_eq!(
         [
             schema::<Project>(),
-            schema::<Page>(),
             schema::<RasterLayer>(),
             schema::<Geometry>(),
             schema::<Visibility>(),
@@ -120,7 +119,6 @@ async fn built_in_component_schema_revisions_are_explicit() {
             schema::<OcrAnalysis>(),
             schema::<Group>(),
             schema::<TextGroup>(),
-            schema::<Typography>(),
             schema::<Region>(),
             schema::<DetectionAnalysis>(),
             schema::<EntityOrigin>(),
@@ -128,9 +126,95 @@ async fn built_in_component_schema_revisions_are_explicit() {
             schema::<crate::components::Assets>(),
             schema::<Relation>(),
         ],
-        [1; 18]
+        [1; 16]
     );
+    assert_eq!(schema::<Page>(), 2);
+    assert_eq!(schema::<Typography>(), 4);
     assert_eq!(schema::<TextLayout>(), 2);
+}
+
+#[tokio::test]
+async fn chapter_start_markers_are_persisted_with_pages_when_reordered() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("chapter-markers.khrproj");
+    let mut session = Session::create(&path).await.unwrap();
+    let mut ids = None;
+    let patch = session
+        .snapshot()
+        .patch(|edit| {
+            let chapter_start = edit.add_page(page().with_chapter_start(true), At::End)?;
+            let other = edit.add_page(page(), At::End)?;
+            ids = Some((chapter_start, other));
+            Ok(())
+        })
+        .unwrap();
+    let first_snapshot = session.commit(patch).await.unwrap().snapshot;
+    let (chapter_start, other) = ids.unwrap();
+    assert!(
+        first_snapshot
+            .page(chapter_start)
+            .unwrap()
+            .page()
+            .unwrap()
+            .chapter_start
+    );
+
+    let patch = first_snapshot
+        .patch(|edit| edit.move_entity(chapter_start, None, At::End))
+        .unwrap();
+    drop(first_snapshot);
+    let moved_snapshot = session.commit(patch).await.unwrap().snapshot;
+    let order = moved_snapshot
+        .pages()
+        .map(|page| page.id())
+        .collect::<Vec<_>>();
+    assert_eq!(order, [other, chapter_start]);
+    drop(moved_snapshot);
+    drop(session);
+
+    let session = Session::open(&path).await.unwrap();
+    let snapshot = session.snapshot();
+    assert_eq!(
+        snapshot.pages().map(|page| page.id()).collect::<Vec<_>>(),
+        order
+    );
+    assert!(
+        snapshot
+            .page(chapter_start)
+            .unwrap()
+            .page()
+            .unwrap()
+            .chapter_start
+    );
+}
+
+#[test]
+fn legacy_pages_default_chapter_start_to_false() {
+    #[revisioned(revision = 1)]
+    #[derive(Clone)]
+    struct PageV1 {
+        label: String,
+        width: f64,
+        height: f64,
+    }
+
+    impl Component for PageV1 {
+        const KIND: &'static str = Page::KIND;
+    }
+
+    let record_exists = |_id| true;
+    let blob_exists = |_id| true;
+    let context = ValidationContext::new(&record_exists, &blob_exists);
+    let legacy = PageV1 {
+        label: "legacy".to_owned(),
+        width: 100.0,
+        height: 200.0,
+    };
+    let record = component::encode(&legacy, &context).unwrap();
+    let page = component::decode::<Page>(&record, &context).unwrap();
+
+    assert_eq!(page.label, "legacy");
+    assert!(!page.chapter_start);
 }
 
 #[tokio::test]
@@ -1076,9 +1160,15 @@ async fn independent_pipeline_components_rebase() {
                     color: Some([1, 2, 3, 255]),
                     stroke_color: None,
                     stroke_width: None,
+                    stroke_method: None,
+                    stroke_position: None,
+                    stroke_join: None,
+                    outer_stroke_color: None,
+                    outer_stroke_width: None,
                     alignment: Some(TextAlignment::Center),
                     writing_mode: None,
                     extensions: BTreeMap::new(),
+                    line_spacing: None,
                 },
             )
         })
@@ -1557,4 +1647,147 @@ async fn user_promotion_protects_generated_entity_and_relation_lifecycle() {
         rerun.remove_entity(entity, RemovePolicy::Cascade),
         Err(Error::Authorship(_))
     ));
+}
+
+/// Serves a replica's blob requests from the host's snapshot, as the session
+/// link does across machines.
+struct HostBlobs(Snapshot);
+
+impl koharu_storage::BlobOrigin for HostBlobs {
+    fn fetch(
+        &self,
+        id: BlobId,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = koharu_storage::Result<bytes::Bytes>> + Send + '_>,
+    > {
+        Box::pin(async move {
+            self.0
+                .read_blob(id)
+                .await
+                .map_err(|error| koharu_storage::Error::Task(error.into()))
+        })
+    }
+}
+
+#[tokio::test]
+async fn encoded_snapshot_opens_a_replica_that_commits_at_the_hosts_revision() {
+    let mut host = Session::memory().await.unwrap();
+    let mut created = None;
+    let create = host
+        .snapshot()
+        .patch(|edit| {
+            created = Some(edit.add_page(page(), At::End)?);
+            Ok(())
+        })
+        .unwrap();
+    host.commit(create).await.unwrap();
+    let page = created.unwrap();
+
+    let encoded = host.snapshot().encode().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let origin = Arc::new(HostBlobs(host.snapshot()));
+    let mut replica = Session::replica(&encoded, cache.path(), origin)
+        .await
+        .unwrap();
+    assert_eq!(replica.snapshot().revision(), host.snapshot().revision());
+    assert_eq!(replica.snapshot().pages().len(), 1);
+
+    // One edit travels as bytes both ways and lands on both machines under the
+    // revision the host handed out.
+    let patch = replica
+        .snapshot()
+        .patch(|edit| edit.set_page(page, PageDraft::new("renamed", 1200.0, 1800.0)))
+        .unwrap();
+    let wire = patch.encode().unwrap();
+    let committed = host
+        .commit(Patch::decode(&wire, &host.snapshot()).unwrap())
+        .await
+        .unwrap();
+    replica
+        .commit_remote(
+            Patch::decode(&wire, &replica.snapshot()).unwrap(),
+            committed.revision,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(replica.snapshot().revision(), committed.revision);
+    assert_eq!(
+        replica.snapshot().page(page).unwrap().page().unwrap().label,
+        "renamed"
+    );
+    assert_eq!(
+        host.snapshot().page(page).unwrap().page().unwrap().label,
+        "renamed"
+    );
+    // The replica can undo through the same patch path the host uses.
+    assert!(replica.undo_patch([committed.revision]).is_ok());
+    // A patch that already landed no longer decodes: its observations moved on.
+    assert!(Patch::decode(&wire, &replica.snapshot()).is_err());
+    // And the replica never moves backwards, even if it is told an old revision.
+    let behind = replica
+        .snapshot()
+        .patch(|edit| edit.set_page(page, PageDraft::new("other", 1200.0, 1800.0)))
+        .unwrap();
+    let behind = Patch::decode(&behind.encode().unwrap(), &replica.snapshot()).unwrap();
+    assert!(
+        replica
+            .commit_remote(behind, committed.revision)
+            .await
+            .is_err()
+    );
+}
+
+/// Projects saved before the double outline (Typography revision 2) must still open, with no
+/// second outline.
+#[test]
+fn typography_revision_two_loads_without_a_second_outline() {
+    use revision::{DeserializeRevisioned, SerializeRevisioned};
+
+    #[revisioned(revision = 2)]
+    struct TypographyV2 {
+        origin: Origin,
+        preferred_font: Option<String>,
+        font_weight: Option<u16>,
+        font_style: Option<FontStyle>,
+        size: Option<f32>,
+        auto_fit: bool,
+        color: Option<[u8; 4]>,
+        stroke_color: Option<[u8; 4]>,
+        stroke_width: Option<f32>,
+        alignment: Option<TextAlignment>,
+        writing_mode: Option<crate::WritingMode>,
+        extensions: BTreeMap<String, String>,
+        #[revision(start = 2)]
+        stroke_method: Option<crate::StrokeMethod>,
+        #[revision(start = 2)]
+        stroke_position: Option<crate::StrokePosition>,
+        #[revision(start = 2)]
+        stroke_join: Option<crate::StrokeJoin>,
+    }
+
+    let old = TypographyV2 {
+        origin: Origin::User,
+        preferred_font: Some("CCWildWords".to_owned()),
+        font_weight: Some(400),
+        font_style: None,
+        size: Some(300.0),
+        auto_fit: false,
+        color: Some([0, 0, 0, 255]),
+        stroke_color: Some([255, 255, 255, 255]),
+        stroke_width: Some(24.5),
+        alignment: None,
+        writing_mode: None,
+        extensions: BTreeMap::new(),
+        stroke_method: Some(crate::StrokeMethod::Contour),
+        stroke_position: Some(crate::StrokePosition::Outside),
+        stroke_join: Some(crate::StrokeJoin::Round),
+    };
+    let mut bytes = Vec::new();
+    old.serialize_revisioned(&mut bytes).unwrap();
+    let loaded = Typography::deserialize_revisioned(&mut bytes.as_slice()).unwrap();
+    assert_eq!(loaded.stroke_width, Some(24.5));
+    assert_eq!(loaded.stroke_method, Some(crate::StrokeMethod::Contour));
+    assert_eq!(loaded.outer_stroke_color, None);
+    assert_eq!(loaded.outer_stroke_width, None);
 }

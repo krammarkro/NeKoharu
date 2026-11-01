@@ -27,8 +27,9 @@ pub use components::{
     Asset, AssetInput, AssetMetadata, AssetRole, Authored, DetectionAnalysis, DetectionLabel,
     EntityOrigin, FontStyle, Generation, Geometry, Group, LanguageTag, OcrAnalysis, Origin, Page,
     PageDraft, Point, Project, RasterLayer, RasterLayerKind, Region, RegionKind, Relation,
-    RelationKind, SourceText, TextAlignment, TextContent, TextDirection, TextGroup, TextLayout,
-    TextLayoutKind, TextRole, Translation, Typography, Visibility, WritingMode,
+    RelationKind, SourceText, StrokeJoin, StrokeMethod, StrokePosition, TextAlignment, TextContent,
+    TextDirection, TextGroup, TextLayout, TextLayoutKind, TextRole, Translation, Typography,
+    Visibility, WritingMode,
 };
 pub use document::{AnalysisRegionRef, GroupRef, TextContentRef, TextLayerRef};
 pub use edit::{At, Edit, RemovePolicy};

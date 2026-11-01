@@ -42,7 +42,7 @@ use crate::{
     },
     images::{DecodedImage, ImageCache, decode},
     script::{is_chinese_or_japanese_text, shaping_direction_for_text},
-    text_renderer::{StrokeOptions, TextNodeDescriptor, TextRenderer},
+    text_renderer::{OuterStroke, StrokeOptions, TextNodeDescriptor, TextRenderer},
 };
 
 const MAX_SURFACE_DIMENSION: u32 = 32_768;
@@ -51,6 +51,7 @@ const DEFAULT_RETAINED_NODES: usize = 2_048;
 const MAX_RESOURCE_READS: usize = 8;
 const ASSETS_KIND: &str = "dev.koharu.assets";
 const MINIMUM_FONT_SIZE: f32 = 9.0;
+const DEFAULT_LINE_SPACING: f32 = 1.2;
 
 #[derive(Clone)]
 pub struct Renderer {
@@ -158,6 +159,18 @@ impl Renderer {
         self.inner
             .fonts
             .families()
+            .await
+            .map_err(Error::FontResource)
+    }
+
+    /// Returns the bundled preview image for a family, if the catalog has one.
+    ///
+    /// Callers use this before acquiring a rasterizer so cached previews do not
+    /// force GPU initialization.
+    pub async fn bundled_font_preview(&self, family_name: &str) -> Result<Option<Vec<u8>>> {
+        self.inner
+            .fonts
+            .preview_image(family_name)
             .await
             .map_err(Error::FontResource)
     }
@@ -818,7 +831,10 @@ impl Traversal<'_> {
                 .and_then(|value| value.color)
                 .unwrap_or([0, 0, 0, 255]),
             stroke: resolve_stroke(typography.as_ref()),
-            line_height: 1.2,
+            line_height: typography
+                .as_ref()
+                .and_then(|value| value.line_spacing)
+                .unwrap_or(DEFAULT_LINE_SPACING),
             letter_spacing: 0.0,
             word_spacing: 0.0,
             text_inset: [4.0; 4],
@@ -1459,6 +1475,22 @@ fn resolve_stroke(typography: Option<&Typography>) -> Option<StrokeOptions> {
     Some(StrokeOptions {
         color: typography.stroke_color.unwrap_or([u8::MAX; 4]),
         width_px,
+        method: typography
+            .stroke_method
+            .unwrap_or(koharu_scene::StrokeMethod::Expansion),
+        position: typography
+            .stroke_position
+            .unwrap_or(koharu_scene::StrokePosition::Outside),
+        join: typography
+            .stroke_join
+            .unwrap_or(koharu_scene::StrokeJoin::Round),
+        outer: typography
+            .outer_stroke_width
+            .filter(|width| *width > 0.0)
+            .map(|width_px| OuterStroke {
+                color: typography.outer_stroke_color.unwrap_or([0, 0, 0, u8::MAX]),
+                width_px,
+            }),
     })
 }
 
@@ -1719,9 +1751,15 @@ mod tests {
             color: None,
             stroke_color: None,
             stroke_width: None,
+            stroke_method: None,
+            stroke_position: None,
+            stroke_join: None,
+            outer_stroke_color: None,
+            outer_stroke_width: None,
             alignment: None,
             writing_mode: Some(koharu_scene::WritingMode::Vertical),
             extensions: BTreeMap::new(),
+            line_spacing: None,
         };
         let bounds = LayoutBox {
             x: 0.0,
@@ -1755,9 +1793,15 @@ mod tests {
             color: None,
             stroke_color: None,
             stroke_width: None,
+            stroke_method: None,
+            stroke_position: None,
+            stroke_join: None,
+            outer_stroke_color: None,
+            outer_stroke_width: None,
             alignment: None,
             writing_mode: Some(koharu_scene::WritingMode::Vertical),
             extensions: BTreeMap::new(),
+            line_spacing: None,
         };
         let bounds = LayoutBox {
             x: 0.0,

@@ -389,6 +389,19 @@ impl Observation {
     }
 }
 
+/// A patch as it travels between machines: the identity that decides whether
+/// a change still applies, plus the bytes of every blob it introduces. A
+/// receiver rebuilds it against the snapshot it currently holds.
+#[revisioned(revision = 1)]
+#[derive(Clone)]
+struct WirePatch {
+    project: koharu_storage::DocumentId,
+    observations: Vec<Observation>,
+    operations: Vec<Operation>,
+    attachments: Vec<(BlobId, Vec<u8>)>,
+    label: Option<String>,
+}
+
 #[revisioned(revision = 1)]
 #[derive(Clone)]
 struct PatchIdentity {
@@ -473,6 +486,52 @@ impl Patch {
 
     pub fn validate_on(&self, snapshot: &Snapshot) -> Result<()> {
         self.rebase_on(snapshot).map(|_| ())
+    }
+
+    /// Serializes the patch for transport to another machine.
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        revision::to_vec(&WirePatch {
+            project: self.project,
+            observations: self.observations.to_vec(),
+            operations: self.operations.to_vec(),
+            attachments: self
+                .attachments
+                .iter()
+                .map(|(id, bytes)| (*id, bytes.to_vec()))
+                .collect(),
+            label: self.label.as_deref().map(str::to_owned),
+        })
+        .map_err(Into::into)
+    }
+
+    /// Rebuilds an encoded patch on top of `base`, the receiver's current
+    /// snapshot. The patch's observations are validated against that snapshot,
+    /// so a change that raced with someone else's edit is rejected here.
+    pub fn decode(encoded: &[u8], base: &Snapshot) -> Result<Self> {
+        let wire: WirePatch = revision::from_slice(encoded)?;
+        if wire.project != base.state.document {
+            return Err(Error::invalid("patch belongs to another project"));
+        }
+        for (id, bytes) in &wire.attachments {
+            if BlobId::for_bytes(bytes) != *id {
+                return Err(Error::invalid("patch blob has mismatched bytes"));
+            }
+        }
+        for observation in &wire.observations {
+            observation.validate(&base.state)?;
+        }
+        let state = apply_operations(&base.state, &wire.operations)?;
+        Self::new(
+            base,
+            state,
+            wire.observations,
+            wire.operations,
+            wire.attachments
+                .into_iter()
+                .map(|(id, bytes)| (id, bytes::Bytes::from(bytes)))
+                .collect(),
+            wire.label.map(Arc::from),
+        )
     }
 
     pub fn rebase_on(&self, snapshot: &Snapshot) -> Result<Self> {

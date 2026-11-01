@@ -122,9 +122,19 @@ export function TitleBar() {
                     <MenubarItem
                       key={format}
                       disabled={exporting}
-                      onClick={() => exportProject(format)}
+                      onClick={() => exportProject(format, null)}
                     >
                       {format.toUpperCase()}…
+                    </MenubarItem>
+                  ))}
+                  <MenubarSeparator />
+                  {(['png', 'psd', 'cbz'] as const).map((format) => (
+                    <MenubarItem
+                      key={format}
+                      disabled={selectedPages.length === 0 || exporting}
+                      onClick={() => exportProject(format, selectedPages)}
+                    >
+                      {t('menu.exportSelectedPages')} — {format.toUpperCase()}…
                     </MenubarItem>
                   ))}
                 </MenubarSubContent>

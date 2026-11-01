@@ -8,6 +8,7 @@ pub(crate) mod output;
 pub(crate) mod preferences;
 pub(crate) mod processing;
 pub(crate) mod project;
+pub(crate) mod session;
 
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -75,15 +76,20 @@ pub fn bindings() -> tauri_specta::Builder<tauri_runtime_cef::CefRuntime> {
             lifecycle::import,
             lifecycle::select_page,
             editing::rename_page,
+            editing::set_page_chapter_start,
             editing::delete_pages,
             editing::move_page,
+            editing::merge_pages,
             editing::set_source_text,
             editing::set_translation,
+            editing::find_translations,
+            editing::replace_translations,
             editing::set_typography,
             editing::set_geometry,
             editing::set_visibility,
             editing::delete_layers,
             editing::move_layer,
+            editing::paste_text_layers,
             editing::undo,
             editing::redo,
             processing::process,
@@ -102,10 +108,18 @@ pub fn bindings() -> tauri_specta::Builder<tauri_runtime_cef::CefRuntime> {
             canvas::get_canvas_page_resource,
             canvas::add_point_text,
             canvas::add_text_box,
+            canvas::add_ocr_box,
+            canvas::clean_ocr_box,
             canvas::commit_paint,
             canvas::commit_erase,
             canvas::commit_transform,
             canvas::commit_inpaint,
+            session::start_session,
+            session::stop_session,
+            session::join_session,
+            session::leave_session,
+            session::get_session_name,
+            session::set_session_name,
         ])
         .disable_serde_phases()
         .error_handling(ErrorHandlingMode::Throw)

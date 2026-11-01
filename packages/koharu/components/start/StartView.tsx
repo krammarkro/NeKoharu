@@ -1,6 +1,6 @@
 'use client'
 
-import { Folder, FolderPlus, Plus, Settings, Trash2 } from 'lucide-react'
+import { Folder, FolderPlus, Link2, Plus, Settings, Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -29,6 +29,7 @@ export function StartView() {
   const setSettingsOpen = useKoharuStore((state) => state.setSettingsOpen)
   const [projects, setProjects] = useState<ProjectSummary[]>([])
   const [name, setName] = useState('')
+  const [invite, setInvite] = useState('')
   const [busy, setBusy] = useState<string | null>('list')
   const [projectToDelete, setProjectToDelete] = useState<string | null>(null)
 
@@ -65,6 +66,20 @@ export function StartView() {
     try {
       await call(commands.openProject, projectName)
       await refresh(projectKey, pagesKey, pageKey)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const joinSession = async (event: FormEvent) => {
+    event.preventDefault()
+    const link = invite.trim()
+    if (!link || busy) return
+    setBusy('join')
+    try {
+      await call(commands.joinSession, link)
+      await refresh(projectKey, pagesKey, pageKey)
+      setInvite('')
     } finally {
       setBusy(null)
     }
@@ -158,6 +173,32 @@ export function StartView() {
                   >
                     <Plus className='size-3.5' />
                     {t('start.create')}
+                  </Button>
+                </form>
+
+                <form className='mt-6 grid gap-2.5' onSubmit={joinSession}>
+                  <label htmlFor='session-link' className='text-[10px] font-medium text-foreground'>
+                    {t('session.join')}
+                  </label>
+                  <Input
+                    id='session-link'
+                    value={invite}
+                    onChange={(event) => setInvite(event.target.value)}
+                    placeholder={t('session.joinPlaceholder')}
+                    aria-label={t('session.join')}
+                    autoComplete='off'
+                    disabled={busy !== null}
+                    className='h-9 bg-background text-[11px]'
+                  />
+                  <Button
+                    type='submit'
+                    size='sm'
+                    variant='outline'
+                    className='h-9 justify-center gap-1.5 text-[11px]'
+                    disabled={!invite.trim() || busy !== null}
+                  >
+                    <Link2 className='size-3.5' />
+                    {t('session.joinAction')}
                   </Button>
                 </form>
 

@@ -21,6 +21,7 @@ pub use language::Language;
 pub use model::{GenerationConfig, Model, ModelSelection, Quantization};
 pub(crate) use model::{ModelGeneration, QuantizationDefinition, display_name};
 pub use provider::{Provider, ProviderConfig, ProvidersConfig};
+pub use remote::{ChatEndpoint, chat_endpoint};
 
 #[derive(Clone)]
 pub struct Translator {

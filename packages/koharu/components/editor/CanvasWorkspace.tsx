@@ -6,11 +6,14 @@ import { useTranslation } from 'react-i18next'
 import { useColorSampling } from '@/components/controls/ColorSampling'
 import { CanvasCommandBar } from '@/components/editor/CanvasCommandBar'
 import { CanvasOverlay } from '@/components/editor/CanvasOverlay'
+import { SessionNotice } from '@/components/editor/SessionBar'
 import { StatusBar } from '@/components/editor/StatusBar'
+import { TextEditOverlay } from '@/components/editor/TextEditOverlay'
 import { ToolBar } from '@/components/editor/ToolBar'
 import { useCanvas } from '@/components/editor/useCanvas'
 import { call } from '@/lib/backend'
-import { expandLayerSelection } from '@/lib/document'
+import { rememberColor } from '@/lib/colorHistory'
+import { expandLayerSelection, isTextLayer } from '@/lib/document'
 import {
   controlFrame,
   draftFrame,
@@ -21,6 +24,11 @@ import {
   selectableLayer,
   translateFrames,
 } from '@/lib/geometry'
+import {
+  copySelectedTextLayers,
+  duplicateSelectedTextLayers,
+  pasteCopiedTextLayers,
+} from '@/lib/layerClipboard'
 import {
   pageKey,
   pagesKey,
@@ -36,11 +44,18 @@ import {
   maxBrushDiameter,
   MIN_BRUSH_DIAMETER,
   receiveError,
+  sessionReadOnly,
   useKoharuStore,
   type CanvasTool,
 } from '@/lib/store'
 import { prefetchCanvasPages, workspaceColor, type CanvasColor } from '@koharu/bridge/canvas'
-import { commands, type Frame, type Point, type TransformFrame } from '@koharu/bridge/protocol'
+import {
+  commands,
+  type EntityId,
+  type Frame,
+  type Point,
+  type TransformFrame,
+} from '@koharu/bridge/protocol'
 import { Button } from '@koharu/ui/components/button'
 
 const BRUSH_DIAMETER_STEP = 4
@@ -48,6 +63,8 @@ const BRUSH_DIAMETER_STEP = 4
 const canvasCursors = {
   select: undefined,
   text: 'text',
+  ocr: 'crosshair',
+  ocr_clean: 'crosshair',
   draw: 'none',
   eraser: 'none',
   color_picker: 'crosshair',
@@ -57,6 +74,7 @@ const canvasCursors = {
 
 type Gesture =
   | { kind: 'pan'; pointer: number; start: Point; translation: [number, number] }
+  | { kind: 'brush_size'; pointer: number; start: Point; diameter: number }
   | {
       kind: 'select'
       pointer: number
@@ -66,6 +84,7 @@ type Gesture =
     }
   | { kind: 'move'; pointer: number; start: Point; originals: TransformFrame[] }
   | { kind: 'text'; pointer: number; start: Point; frame: Frame }
+  | { kind: 'ocr'; pointer: number; start: Point; frame: Frame; cleanup: boolean }
   | StrokeGesture
 
 interface StrokeGesture {
@@ -105,18 +124,21 @@ export function CanvasWorkspace() {
   const [draft, setDraft] = useState<Frame | null>(null)
   const [hovered, setHovered] = useState<string | null>(null)
   const [cursor, setCursor] = useState<Point | null>(null)
+  const [editingText, setEditingText] = useState<EntityId | null>(null)
   const colorSampling = useColorSampling()
 
   const page = usePage().data
   const pages = usePages().data
   const canvasPage = useKoharuStore((state) => state.canvasPage)
-  const camera = useKoharuStore((state) => state.camera) 
+  const camera = useKoharuStore((state) => state.camera)
   const canvasRevision = useKoharuStore((state) => state.canvasRevision)
   const canvasGeneration = useKoharuStore((state) => state.canvasGeneration)
   const canvasSize = useKoharuStore((state) => state.canvasSize)
   const fitCanvasRequest = useKoharuStore((state) => state.fitCanvasRequest)
   const layerFrames = useKoharuStore((state) => state.layerFrames)
   const tool = useKoharuStore((state) => state.tool)
+  // A joined project without its host accepts no edits, only viewing.
+  const readOnly = useKoharuStore((state) => sessionReadOnly(state.session))
   const brush = useKoharuStore((state) => state.brush)
   const selected = useKoharuStore((state) => state.selectedLayers)
   const selectLayers = useKoharuStore((state) => state.selectLayers)
@@ -132,6 +154,13 @@ export function CanvasWorkspace() {
     selected.length === 1
       ? page?.layers.find((layer) => layer.id === selected[0] && layer.type === 'raster')
       : undefined
+  const cleanupLayer = page?.layers.find(
+    (layer) => layer.type === 'raster' && layer.kind === 'cleanup',
+  )
+  const editedLayer = editingText
+    ? page?.layers.filter(isTextLayer).find((layer) => layer.id === editingText)
+    : undefined
+  const editedFrame = editedLayer ? controlFrame(editedLayer, layerFrames) : null
 
   const enqueue = useCallback(<Result,>(operation: () => Promise<Result>): Promise<Result> => {
     const pending = commandQueue.current.then(operation)
@@ -222,6 +251,10 @@ export function CanvasWorkspace() {
       strokeUpdates.clear()
       canvas?.cancelStroke()
     }
+    if (current?.kind === 'brush_size') {
+      const { brush, setBrush } = useKoharuStore.getState()
+      setBrush({ ...brush, diameter: current.diameter })
+    }
     if (transformActive.current) {
       transformUpdates.clear()
       transformActive.current = false
@@ -230,6 +263,7 @@ export function CanvasWorkspace() {
     }
     setDraft(null)
     setPreviews({})
+    setSelectionRect(null)
   }, [canvas, strokeUpdates, transformUpdates])
 
   const fitCanvas = useCallback(() => {
@@ -274,7 +308,10 @@ export function CanvasWorkspace() {
     const resize = new ResizeObserver(report)
     const theme = new MutationObserver(report)
     resize.observe(element)
-    theme.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
+    theme.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['class', 'data-palette'],
+    })
     window.addEventListener('resize', report)
     window.visualViewport?.addEventListener('resize', report)
     return () => {
@@ -334,6 +371,17 @@ export function CanvasWorkspace() {
 
   useEffect(() => cancelGesture, [cancelGesture, canvasGeneration, canvasRevision, page?.id, tool])
 
+  useEffect(() => setEditingText(null), [page?.id])
+
+  const editText = (point: Point) => {
+    if (!page || readOnly) return false
+    const target = hitTestLayers(page.layers, point, layerFrames)
+    if (!target || !isTextLayer(target)) return false
+    selectLayers([target.id])
+    setEditingText(target.id)
+    return true
+  }
+
   useEffect(() => {
     const editable = (target: EventTarget | null) =>
       target instanceof HTMLInputElement ||
@@ -353,6 +401,24 @@ export function CanvasWorkspace() {
         return
       }
       const command = event.ctrlKey || event.metaKey
+      if (command && event.key.toLowerCase() === 'c') {
+        if (copySelectedTextLayers(page ?? undefined)) event.preventDefault()
+        return
+      }
+      if (command && event.key.toLowerCase() === 'v') {
+        if (useKoharuStore.getState().copiedTextLayers.length > 0 && page) {
+          event.preventDefault()
+          void pasteCopiedTextLayers(page).catch(() => undefined)
+        }
+        return
+      }
+      if (command && event.key.toLowerCase() === 'd') {
+        if (useKoharuStore.getState().selectedLayers.length > 0 && page) {
+          event.preventDefault()
+          void duplicateSelectedTextLayers(page).catch(() => undefined)
+        }
+        return
+      }
       if (command && event.key.toLowerCase() === 'z') {
         event.preventDefault()
         void call(event.shiftKey ? commands.redo : commands.undo)
@@ -386,9 +452,19 @@ export function CanvasWorkspace() {
         return
       }
       const next = (
-        ['select', 'text', 'draw', 'eraser', 'color_picker', 'remove', 'pan'] as const
+        [
+          'select',
+          'text',
+          'ocr',
+          'ocr_clean',
+          'draw',
+          'eraser',
+          'color_picker',
+          'remove',
+          'pan',
+        ] as const
       ).find((action) => state.shortcuts[action] === event.key.toLowerCase())
-      if (next) setTool(next)
+      if (next) setTool(next, cleanupLayer?.id)
     }
 
     const up = (event: KeyboardEvent) => {
@@ -408,7 +484,15 @@ export function CanvasWorkspace() {
       window.removeEventListener('keyup', up)
       window.removeEventListener('blur', blur)
     }
-  }, [cancelGesture, colorSampling, page, requestCanvasFit, selectLayers, setTool])
+  }, [
+    cancelGesture,
+    cleanupLayer?.id,
+    colorSampling,
+    page,
+    requestCanvasFit,
+    selectLayers,
+    setTool,
+  ])
 
   const clientPagePoint = (clientX: number, clientY: number) =>
     pagePoint(
@@ -468,6 +552,20 @@ export function CanvasWorkspace() {
       return
     }
 
+    if (current.kind === 'brush_size') {
+      // The circle stays where the drag began and its edge follows the
+      // pointer, so the radius grows by the horizontal travel.
+      setCursor(current.start)
+      const { brush: currentBrush, camera } = useKoharuStore.getState()
+      const diameter = clamp(
+        Math.round(current.diameter + (2 * (physical.x - current.start.x)) / camera.zoom),
+        MIN_BRUSH_DIAMETER,
+        maxBrushDiameter(page.size),
+      )
+      if (diameter !== currentBrush.diameter) setBrush({ ...currentBrush, diameter })
+      return
+    }
+
     const points = samples.map((value) => clientPagePoint(value.clientX, value.clientY))
     const point = points.at(-1)!
     if (current.kind === 'select') {
@@ -491,7 +589,7 @@ export function CanvasWorkspace() {
           y: point.y - current.start.y,
         }),
       )
-    } else if (current.kind === 'text') {
+    } else if (current.kind === 'text' || current.kind === 'ocr') {
       current.frame = draftFrame(current.start, point)
       setDraft(current.frame)
     } else if (current.kind === 'paint' || current.kind === 'erase' || current.kind === 'inpaint') {
@@ -520,9 +618,7 @@ export function CanvasWorkspace() {
         .map((layer) => layer.id)
 
       selectLayers(
-        current.additive
-          ? [...new Set([...selected, ...selectedInRect])]
-          : selectedInRect,
+        current.additive ? [...new Set([...selected, ...selectedInRect])] : selectedInRect,
       )
       setSelectionRect(null)
     } else if (current.kind === 'move') {
@@ -541,6 +637,16 @@ export function CanvasWorkspace() {
           return refresh(projectKey, pagesKey, pageKey)
         })
         .catch(() => undefined)
+    } else if (current.kind === 'ocr') {
+      const { zoom } = useKoharuStore.getState().camera
+      setDraft(null)
+      if (current.frame.width < 4 / zoom || current.frame.height < 4 / zoom) return
+      // Cleaning detects the lettering in the box first, so its text layers
+      // arrive with the job rather than with this call.
+      const operation = current.cleanup
+        ? call(commands.cleanOcrBox, current.frame)
+        : call(commands.addOcrBox, current.frame).then((result) => selectLayers([result.layer]))
+      void operation.then(() => refresh(projectKey, pagesKey, pageKey)).catch(() => undefined)
     } else if (current.kind === 'paint' || current.kind === 'erase' || current.kind === 'inpaint') {
       strokeUpdates.commit()
       try {
@@ -552,30 +658,30 @@ export function CanvasWorkspace() {
       const operation =
         current.kind === 'paint'
           ? enqueue(() =>
-            call(commands.commitPaint, current.revision, current.layer, current.points, {
-              diameter: current.diameter,
-              color: current.color!,
-            }),
-          ).then((result) => {
-            selectLayers([result.layer])
-            return refresh(projectKey, pagesKey, pageKey)
-          })
-          : current.kind === 'erase'
-            ? enqueue(() =>
-              call(
-                commands.commitErase,
-                current.revision,
-                current.layer!,
-                current.points,
-                current.diameter,
-              ),
+              call(commands.commitPaint, current.revision, current.layer, current.points, {
+                diameter: current.diameter,
+                color: current.color!,
+              }),
             ).then((result) => {
               selectLayers([result.layer])
               return refresh(projectKey, pagesKey, pageKey)
             })
+          : current.kind === 'erase'
+            ? enqueue(() =>
+                call(
+                  commands.commitErase,
+                  current.revision,
+                  current.layer!,
+                  current.points,
+                  current.diameter,
+                ),
+              ).then((result) => {
+                selectLayers([result.layer])
+                return refresh(projectKey, pagesKey, pageKey)
+              })
             : enqueue(() =>
-              call(commands.commitInpaint, current.revision, current.points, current.diameter),
-            )
+                call(commands.commitInpaint, current.revision, current.points, current.diameter),
+              )
       commitPending.current = true
       void operation
         .catch(() => canvas?.cancelStroke())
@@ -588,12 +694,13 @@ export function CanvasWorkspace() {
       <CanvasCommandBar />
       <div className='relative flex min-h-0 min-w-0 flex-1'>
         <ToolBar />
+        <SessionNotice />
         <div
           ref={surface}
           tabIndex={0}
           aria-label={t('canvas.surface')}
           aria-busy={page ? canvasState.status !== 'ready' : undefined}
-          className='relative min-h-0 min-w-0 flex-1 touch-none overflow-hidden bg-[var(--surface-canvas)] outline-none'
+          className='relative min-h-0 min-w-0 flex-1 touch-none overflow-hidden bg-[rgb(var(--workspace-background-rgb))] outline-none'
           style={{
             cursor: page && canvasState.status === 'ready' ? canvasCursors[tool] : undefined,
           }}
@@ -610,13 +717,28 @@ export function CanvasWorkspace() {
               return
             if (event.target instanceof Element && event.target.closest('[data-canvas-control]'))
               return
+            const viewing =
+              event.button === 1 ||
+              spaceHeld.current ||
+              tool === 'pan' ||
+              tool === 'select' ||
+              tool === 'color_picker'
+            if (readOnly && !viewing) return
             event.currentTarget.focus()
             event.currentTarget.setPointerCapture(event.pointerId)
             const physical = clientPhysicalPoint(event.clientX, event.clientY)
             const point = clientPagePoint(event.clientX, event.clientY)
             setCursor(physical)
 
-            if (event.button === 1 || tool === 'pan' || spaceHeld.current) {
+            if (event.button === 0 && event.ctrlKey && event.altKey && isBrushTool(tool)) {
+              // Clip Studio's brush resize; Photoshop uses the same keys on macOS.
+              gesture.current = {
+                kind: 'brush_size',
+                pointer: event.pointerId,
+                start: physical,
+                diameter: brush.diameter,
+              }
+            } else if (event.button === 1 || tool === 'pan' || spaceHeld.current) {
               gesture.current = {
                 kind: 'pan',
                 pointer: event.pointerId,
@@ -652,13 +774,28 @@ export function CanvasWorkspace() {
                   : [target.id]
               selectLayers(next)
               if (!next.includes(target.id)) return
+              if (readOnly) return
               const originals = framesFor(next)
               if (!originals.length) return
               gesture.current = { kind: 'move', pointer: event.pointerId, start: point, originals }
               beginTransform(originals)
             } else if (tool === 'text') {
+              if (editText(point)) {
+                event.preventDefault()
+                return
+              }
               const frame = draftFrame(point, point)
               gesture.current = { kind: 'text', pointer: event.pointerId, start: point, frame }
+              setDraft(frame)
+            } else if (tool === 'ocr' || tool === 'ocr_clean') {
+              const frame = draftFrame(point, point)
+              gesture.current = {
+                kind: 'ocr',
+                pointer: event.pointerId,
+                start: point,
+                frame,
+                cleanup: tool === 'ocr_clean',
+              }
               setDraft(frame)
             } else if (tool === 'draw') {
               strokeUpdates.clear()
@@ -735,7 +872,10 @@ export function CanvasWorkspace() {
                 .sampleColor(physical)
                 .then((color) => {
                   const hex = rgbaToHex(color)
-                  if (!colorSampling?.complete(hex)) setBrush({ ...brush, color: hex })
+                  if (!colorSampling?.complete(hex)) {
+                    rememberColor(hex)
+                    setBrush({ ...brush, color: hex })
+                  }
                 })
                 .catch((error: unknown) => receiveError(errorMessage(error)))
             }
@@ -754,6 +894,12 @@ export function CanvasWorkspace() {
             }
           }}
           onPointerCancel={() => cancelGesture()}
+          onDoubleClick={(event) => {
+            if (!page || canvasState.status !== 'ready' || tool !== 'select') return
+            if (event.target instanceof Element && event.target.closest('[data-canvas-control]'))
+              return
+            editText(clientPagePoint(event.clientX, event.clientY))
+          }}
           onPointerLeave={(event) => {
             if (!event.currentTarget.hasPointerCapture(event.pointerId)) {
               setHovered(null)
@@ -820,13 +966,11 @@ export function CanvasWorkspace() {
               className='pointer-events-none absolute z-10 border border-[var(--canvas-selection)] bg-[var(--canvas-selection)]/10'
               style={{
                 left:
-                  (selectionRect.x * camera.zoom + camera.translation[0]) /
-                  window.devicePixelRatio,
+                  (selectionRect.x * camera.zoom + camera.translation[0]) / window.devicePixelRatio,
                 top:
-                  (selectionRect.y * camera.zoom + camera.translation[1]) /
-                  window.devicePixelRatio,
-                width: selectionRect.width * camera.zoom / window.devicePixelRatio,
-                height: selectionRect.height * camera.zoom / window.devicePixelRatio,
+                  (selectionRect.y * camera.zoom + camera.translation[1]) / window.devicePixelRatio,
+                width: (selectionRect.width * camera.zoom) / window.devicePixelRatio,
+                height: (selectionRect.height * camera.zoom) / window.devicePixelRatio,
               }}
             />
           )}
@@ -850,6 +994,14 @@ export function CanvasWorkspace() {
               onTransformStart={beginTransform}
               onTransformFrame={updateTransform}
               onTransformEnd={finishTransform}
+            />
+          )}
+          {editedLayer && editedFrame && (
+            <TextEditOverlay
+              key={editedLayer.id}
+              layer={editedLayer}
+              frame={editedFrame}
+              onClose={() => setEditingText(null)}
             />
           )}
           {page && canvasState.status === 'error' && (
@@ -994,7 +1146,7 @@ class FrameCommand<Value> {
   constructor(
     private readonly execute: (value: Value) => void | Promise<unknown>,
     private readonly merge: (current: Value, next: Value) => Value = (_current, next) => next,
-  ) { }
+  ) {}
 
   schedule(value: Value): void {
     this.pending = this.pending === undefined ? value : this.merge(this.pending, value)

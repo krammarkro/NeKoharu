@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, path::Path, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+    sync::Arc,
+};
 
 use bytes::Bytes;
 
@@ -66,6 +70,34 @@ impl Session {
         Self::assemble(storage, state).await
     }
 
+    /// Opens a replica of a project authored on another machine from its
+    /// encoded state alone. Blobs are fetched from `origin` when first read and
+    /// kept in `cache`. The replica has no undo history of its own.
+    pub async fn replica(
+        encoded: &[u8],
+        cache: &Path,
+        origin: Arc<dyn koharu_storage::BlobOrigin>,
+    ) -> Result<Self> {
+        let stored = koharu_storage::decode_state(encoded)?;
+        let referenced = stored.blobs.iter().copied().collect::<BTreeSet<_>>();
+        let checkpoint: StoredState = revision::from_slice(&stored.payload)?;
+        let state = State::from_checkpoint(stored.document, stored.revision, checkpoint)?;
+        if state.referenced_blobs() != referenced {
+            return Err(Error::invalid(
+                "encoded state and its blob closure disagree",
+            ));
+        }
+        state.validate()?;
+        let storage = koharu_storage::Session::replica(stored, cache, origin).await?;
+        let durable = storage.load().await?;
+        let current = Snapshot::new(Arc::new(state), durable)?;
+        Ok(Self {
+            storage,
+            current,
+            history: BTreeMap::new(),
+        })
+    }
+
     #[must_use]
     pub fn project_id(&self) -> ProjectId {
         ProjectId(self.current.state.document)
@@ -102,6 +134,37 @@ impl Session {
             .revision()
             .next()
             .ok_or_else(|| Error::invalid("project revision overflow"))?;
+        self.apply(patch, next_revision).await
+    }
+
+    /// Applies a commit another machine produced and adopts that machine's
+    /// revision number, so replicas of one project stay on the host's
+    /// numbering. `patch` must already be rebased onto the current snapshot.
+    pub async fn commit_remote(
+        &mut self,
+        patch: Patch,
+        revision: crate::Revision,
+    ) -> Result<Commit> {
+        if patch.project != self.current.state.document {
+            return Err(Error::invalid("patch belongs to another project"));
+        }
+        if patch.is_empty() {
+            return Ok(Commit {
+                revision: self.current.revision(),
+                changes: Change::empty(self.current.revision()),
+                snapshot: self.current.clone(),
+            });
+        }
+        if revision <= self.current.revision() {
+            return Err(Error::Storage(koharu_storage::Error::RevisionConflict {
+                current: self.current.revision(),
+                proposed: revision,
+            }));
+        }
+        self.apply(patch, revision).await
+    }
+
+    async fn apply(&mut self, patch: Patch, next_revision: crate::Revision) -> Result<Commit> {
         let mut state = (*patch.state).clone();
         state.revision = next_revision;
         let proposed = self.current.storage.update(
@@ -147,6 +210,18 @@ impl Session {
         &mut self,
         revisions: impl IntoIterator<Item = crate::Revision>,
     ) -> Result<Commit> {
+        let patch = self.undo_patch(revisions)?;
+        self.commit(patch).await
+    }
+
+    /// Builds the patch that undoes `revisions` against the current snapshot,
+    /// without committing it, so callers can route undo through the same path
+    /// as every other edit.
+    #[tracing::instrument(level = "info", skip_all)]
+    pub fn undo_patch(
+        &self,
+        revisions: impl IntoIterator<Item = crate::Revision>,
+    ) -> Result<Patch> {
         let mut revisions = revisions.into_iter().collect::<Vec<_>>();
         revisions.sort_unstable_by(|left, right| right.cmp(left));
         revisions.dedup();
@@ -168,15 +243,14 @@ impl Session {
         } else {
             format!("Undo {} revisions", revisions.len()).into()
         };
-        let patch = Patch::new(
+        Patch::new(
             &self.current,
             state,
             Vec::new(),
             operations,
             Vec::new(),
             Some(label),
-        )?;
-        self.commit(patch).await
+        )
     }
 
     pub async fn collect_garbage(&self) -> Result<koharu_storage::GcReport> {

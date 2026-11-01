@@ -14,6 +14,7 @@ import { pageKey, pagesKey, projectKey, queryClient, refresh } from '@/lib/queri
 import {
   receiveCanvas,
   receiveDownload,
+  receiveSession,
   receiveStartupState,
   receiveJob,
   receiveResources,
@@ -26,6 +27,7 @@ import {
   type Job,
   type ModelResources,
   type ProjectInfo,
+  type SessionInfo,
 } from '@koharu/bridge/protocol'
 import { Toaster } from '@koharu/ui/components/toast'
 import { TooltipProvider } from '@koharu/ui/components/tooltip'
@@ -74,6 +76,7 @@ export function Providers({ children }: { children: ReactNode }) {
               queryClient.setQueryData(pageKey, null)
             }
           }),
+          channel<SessionInfo>(receiveSession),
         )
         .then((state) => {
           if (lifecycle.active) receiveStartupState(state)

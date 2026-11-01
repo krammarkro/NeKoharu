@@ -159,3 +159,79 @@ async fn rejects_stale_saves() {
         Err(Error::RevisionConflict { .. })
     ));
 }
+
+struct CountingOrigin {
+    bytes: Bytes,
+    fetches: std::sync::atomic::AtomicUsize,
+}
+
+impl crate::BlobOrigin for CountingOrigin {
+    fn fetch(
+        &self,
+        _id: BlobId,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::Result<Bytes>> + Send + '_>>
+    {
+        self.fetches
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async move { Ok(self.bytes.clone()) })
+    }
+}
+
+#[tokio::test]
+async fn replica_fetches_a_blob_once_and_shares_it_through_the_cache() {
+    let cache = tempfile::tempdir().unwrap();
+    let bytes = Bytes::from(vec![3; 512 * 1024]);
+    let id = BlobId::for_bytes(&bytes);
+    let state = crate::StoredState {
+        document: DocumentId::new(),
+        revision: Revision::new(4),
+        blobs: vec![id],
+        payload: b"remote".to_vec(),
+    };
+    let origin = std::sync::Arc::new(CountingOrigin {
+        bytes: bytes.clone(),
+        fetches: Default::default(),
+    });
+
+    let first = Session::replica(state.clone(), cache.path(), origin.clone())
+        .await
+        .unwrap();
+    let loaded = first.load().await.unwrap();
+    assert_eq!(loaded.revision(), Revision::new(4));
+    assert!(!blob_path(cache.path(), id).exists());
+    let (left, right) = tokio::join!(loaded.blobs().get(id), loaded.blobs().get(id));
+    assert_eq!(left.unwrap(), bytes);
+    assert_eq!(right.unwrap(), bytes);
+
+    let second = Session::replica(state, cache.path(), origin.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        second.load().await.unwrap().blobs().get(id).await.unwrap(),
+        bytes
+    );
+    assert_eq!(origin.fetches.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn replica_rejects_fetched_bytes_that_do_not_match_their_id() {
+    let cache = tempfile::tempdir().unwrap();
+    let id = BlobId::for_bytes(b"expected");
+    let state = crate::StoredState {
+        document: DocumentId::new(),
+        revision: Revision::new(1),
+        blobs: vec![id],
+        payload: Vec::new(),
+    };
+    let origin = std::sync::Arc::new(CountingOrigin {
+        bytes: Bytes::from_static(b"tampered"),
+        fetches: Default::default(),
+    });
+    let replica = Session::replica(state, cache.path(), origin).await.unwrap();
+    let loaded = replica.load().await.unwrap();
+    assert!(matches!(
+        loaded.blobs().get(id).await,
+        Err(Error::Invalid(_))
+    ));
+    assert!(!blob_path(cache.path(), id).exists());
+}

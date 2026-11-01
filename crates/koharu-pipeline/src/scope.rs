@@ -67,13 +67,22 @@ pub(crate) struct NormalizedScope {
 }
 
 impl NormalizedScope {
-    pub(crate) fn new(snapshot: &Snapshot, scope: &Scope, stages: &[Stage]) -> Result<Self> {
+    pub(crate) fn new(
+        snapshot: &Snapshot,
+        scope: &Scope,
+        stages: &[Stage],
+        masked_inpainting: bool,
+    ) -> Result<Self> {
+        // A transient inpainting mask names the pixels to clean, so entity
+        // scope only has to narrow the recognition stages that run beside it.
         if matches!(scope, Scope::Entities(_))
-            && stages
-                .iter()
-                .any(|stage| matches!(stage, Stage::Detection | Stage::Inpainting))
+            && stages.iter().any(|stage| match stage {
+                Stage::Detection => true,
+                Stage::Inpainting => !masked_inpainting,
+                Stage::Ocr | Stage::Translation => false,
+            })
         {
-            bail!("detection and inpainting do not support entity-only scope");
+            bail!("detection and unmasked inpainting do not support entity-only scope");
         }
 
         match scope {

@@ -32,14 +32,18 @@ impl StageRunner {
         })
     }
 
+    pub(crate) fn translation_batch_size(&self) -> usize {
+        self.stages.translation_batch_size()
+    }
+
     #[tracing::instrument(skip_all)]
     pub(crate) async fn run(&self, job: StageJob) -> StageCompletion {
         let started = Instant::now();
-        let page = job.input.page();
+        let pages = job.inputs.iter().map(StageInput::page).collect::<Vec<_>>();
         let model = self.stages.model(job.stage).to_owned();
         let outcome = self.run_with_recovery(&job, &model).await;
         StageCompletion {
-            page,
+            pages,
             stage: job.stage,
             model,
             elapsed: started.elapsed(),
@@ -55,7 +59,8 @@ impl StageRunner {
         if job.stop.stopped() {
             return Ok(StageOutcome::Stopped);
         }
-        let skip = self.stages.skip(job.stage, &job.input).map_err(|error| {
+        let input = &job.inputs[0];
+        let skip = self.stages.skip(job.stage, input).map_err(|error| {
             self.stage_error(
                 job.stage,
                 model,
@@ -80,7 +85,7 @@ impl StageRunner {
         };
 
         drop(permit);
-        tracing::warn!(stage = %job.stage, page = %job.input.page(), error = %failure.error, "retrying stage after memory pressure");
+        tracing::warn!(stage = %job.stage, page = %input.page(), error = %failure.error, "retrying stage after memory pressure");
         let _permit = self.accelerator.recover(job.stage, &self.stages).await;
         if job.stop.stopped() {
             return Ok(StageOutcome::Stopped);
@@ -96,14 +101,17 @@ impl StageRunner {
         job: &StageJob,
         model: &str,
     ) -> std::result::Result<StageOutcome, AttemptFailure> {
-        progress::emit(
-            job.progress.as_ref(),
-            Progress::Loading {
-                page: job.input.page(),
-                stage: job.stage,
-                model: model.to_owned(),
-            },
-        );
+        let input = &job.inputs[0];
+        for input in &job.inputs {
+            progress::emit(
+                job.progress.as_ref(),
+                Progress::Loading {
+                    page: input.page(),
+                    stage: job.stage,
+                    model: model.to_owned(),
+                },
+            );
+        }
         self.stages
             .load(job.stage)
             .await
@@ -114,17 +122,22 @@ impl StageRunner {
         if job.stop.stopped() {
             return Ok(StageOutcome::Stopped);
         }
-        progress::emit(
-            job.progress.as_ref(),
-            Progress::Running {
-                page: job.input.page(),
-                stage: job.stage,
-                model: model.to_owned(),
-            },
-        );
-        self.stages
-            .process(job.stage, job.input.clone())
-            .await
+        for input in &job.inputs {
+            progress::emit(
+                job.progress.as_ref(),
+                Progress::Running {
+                    page: input.page(),
+                    stage: job.stage,
+                    model: model.to_owned(),
+                },
+            );
+        }
+        let processed = if job.stage == Stage::Translation {
+            self.stages.process_translation(job.inputs.clone()).await
+        } else {
+            self.stages.process(job.stage, input.clone()).await
+        };
+        processed
             .map(|patch| {
                 if patch.is_empty() {
                     StageOutcome::Skipped
@@ -164,7 +177,7 @@ fn is_out_of_memory(error: &anyhow::Error) -> bool {
 
 pub(crate) struct StageJob {
     stage: Stage,
-    input: StageInput,
+    inputs: Vec<StageInput>,
     stop: StopToken,
     progress: Option<ProgressSink>,
 }
@@ -172,13 +185,13 @@ pub(crate) struct StageJob {
 impl StageJob {
     pub(crate) fn new(
         stage: Stage,
-        input: StageInput,
+        inputs: Vec<StageInput>,
         stop: StopToken,
         progress: Option<ProgressSink>,
     ) -> Self {
         Self {
             stage,
-            input,
+            inputs,
             stop,
             progress,
         }
@@ -192,7 +205,7 @@ pub(crate) enum StageOutcome {
 }
 
 pub(crate) struct StageCompletion {
-    pub(crate) page: EntityId,
+    pub(crate) pages: Vec<EntityId>,
     pub(crate) stage: Stage,
     pub(crate) model: String,
     pub(crate) elapsed: Duration,

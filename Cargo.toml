@@ -4,7 +4,7 @@ default-members = ["crates/koharu"]
 resolver = "3"
 
 [workspace.package]
-version = "0.83.5"
+version = "0.85.3-N"
 edition = "2024"
 description = "Manga translation tools"
 license = "MIT OR Apache-2.0"
@@ -24,6 +24,7 @@ koharu-bindgen = { path = "crates/koharu-bindgen" }
 koharu-config = { path = "crates/koharu-config" }
 koharu-storage = { path = "crates/koharu-storage" }
 koharu-scene = { path = "crates/koharu-scene" }
+koharu-session = { path = "crates/koharu-session" }
 koharu-diffusion = { path = "crates/koharu-diffusion" }
 koharu-diffusion-sys = { path = "crates/koharu-diffusion-sys" }
 koharu-llama = { path = "crates/koharu-llama" }
@@ -52,6 +53,7 @@ anyhow = "1.0.104"
 async-trait = "0.1.92"
 backon = { version = "1.6.0", default-features = false, features = ["std", "tokio-sleep"] }
 imageproc = "0.27.0"
+i_overlay = "9.1.0"
 ab_glyph = "0.2.32"
 clap = { version = "4.6.7", features = ["derive"] }
 serde = { version = "1.0.229", features = ["derive"] }

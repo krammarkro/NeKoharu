@@ -13,7 +13,7 @@ use tempfile::TempDir;
 use tokio::sync::Mutex;
 
 use crate::{
-    BlobId, Blobs, DocumentId, Error, Result, Revision,
+    BlobId, BlobOrigin, Blobs, DocumentId, Error, Result, Revision,
     blobs::BlobStore,
     format::{self, Slot, StoredState},
 };
@@ -141,6 +141,22 @@ impl Session {
         .context("temporary project creation task failed")?
     }
 
+    /// Opens a replica of a project state produced on another machine. Its
+    /// blobs live in `cache`, which other replicas share, and anything missing
+    /// there is fetched from `origin` the first time it is read. The replica
+    /// carries no undo history and shares nothing else with the machine that
+    /// authored it.
+    pub async fn replica(
+        state: StoredState,
+        cache: impl AsRef<Path>,
+        origin: Arc<dyn BlobOrigin>,
+    ) -> Result<Self> {
+        let cache = cache.as_ref().to_owned();
+        tokio::task::spawn_blocking(move || create_replica(cache, state, origin))
+            .await
+            .context("replica creation task failed")?
+    }
+
     #[must_use]
     pub fn document_id(&self) -> DocumentId {
         self.inner.head.read().stored.document
@@ -264,6 +280,29 @@ fn create_project(
     Ok(Session {
         inner: Arc::new(Inner {
             blobs: Arc::new(BlobStore::new(root.clone(), lock, temporary)),
+            root,
+            head: RwLock::new(Head {
+                slot: Slot::A,
+                stored: Arc::new(stored),
+            }),
+            writer: Mutex::new(()),
+        }),
+    })
+}
+
+fn create_replica(
+    cache: PathBuf,
+    stored: StoredState,
+    origin: Arc<dyn BlobOrigin>,
+) -> Result<Session> {
+    let temporary = tempfile::tempdir()?;
+    let root = temporary.path().to_owned();
+    fs::create_dir_all(cache.join("blobs"))?;
+    let lock = lock_project(&root)?;
+    format::save(&root, Slot::A, &stored)?;
+    Ok(Session {
+        inner: Arc::new(Inner {
+            blobs: Arc::new(BlobStore::replica(cache, lock, temporary, origin)),
             root,
             head: RwLock::new(Head {
                 slot: Slot::A,

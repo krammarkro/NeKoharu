@@ -11,7 +11,7 @@ use crate::{Error, Result};
 
 const MANIFEST_MAGIC: [u8; 8] = *b"KHRMANF\0";
 const RESOURCE_MAGIC: [u8; 8] = *b"KHRRSRC\0";
-pub const PREPARED_FRAME_MANIFEST_VERSION: u16 = 4;
+pub const PREPARED_FRAME_MANIFEST_VERSION: u16 = 5;
 pub const PREPARED_RESOURCE_FORMAT_VERSION: u16 = 3;
 /// Logical raster tile edge used by portable frames. The one-pixel sampling
 /// gutter is stored outside this logical extent where adjacent pixels exist.
@@ -628,6 +628,12 @@ impl PreparedScene {
                     run.validate()?;
                 }
                 PreparedSceneCommand::FillPath(path) => path.validate()?,
+                PreparedSceneCommand::StrokePath(stroke) => {
+                    stroke.path.validate()?;
+                    if !stroke.width.is_finite() || stroke.width <= 0.0 {
+                        return Err(Error::invalid("prepared stroke width is invalid"));
+                    }
+                }
             }
         }
         Ok(())
@@ -638,6 +644,29 @@ impl PreparedScene {
 pub enum PreparedSceneCommand {
     GlyphRun(PreparedGlyphRun),
     FillPath(PreparedPath),
+    StrokePath(PreparedStrokePath),
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PreparedStrokePath {
+    pub path: PreparedPath,
+    pub width: f64,
+    pub position: StrokePosition,
+    pub join: StrokeJoin,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum StrokePosition {
+    Outside,
+    Center,
+    Inside,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum StrokeJoin {
+    Round,
+    Miter,
+    Bevel,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

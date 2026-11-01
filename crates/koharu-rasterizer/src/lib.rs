@@ -21,5 +21,6 @@ pub use prepared::{
     PreparedFrameManifest, PreparedGlyph, PreparedGlyphRun, PreparedLayer, PreparedPath,
     PreparedRaster, PreparedRasterTile, PreparedResource, PreparedResourceKind,
     PreparedResourcePacket, PreparedResourceRef, PreparedResourceStore, PreparedScene,
-    PreparedSceneCommand, Presentation, ResourceId, Revision,
+    PreparedSceneCommand, PreparedStrokePath, Presentation, ResourceId, Revision, StrokeJoin,
+    StrokePosition,
 };

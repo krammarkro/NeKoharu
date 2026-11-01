@@ -210,8 +210,34 @@ impl Snapshot {
         Ok(relation)
     }
 
+    /// Serializes this snapshot's state and the ids of its blob closure, which
+    /// [`Session::replica`] opens on another machine.
+    ///
+    /// [`Session::replica`]: crate::Session::replica
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        koharu_storage::encode_state(&koharu_storage::StoredState {
+            document: self.state.document,
+            revision: self.state.revision,
+            blobs: self.storage.blobs().ids().collect(),
+            payload: self.storage.payload().to_vec(),
+        })
+        .map_err(Into::into)
+    }
+
     pub async fn read_blob(&self, id: BlobId) -> Result<bytes::Bytes> {
         self.storage.blobs().get(id).await.map_err(Into::into)
+    }
+
+    /// The referenced blobs in the order a replica should download them.
+    #[must_use]
+    pub fn blobs_in_page_order(&self) -> Vec<BlobId> {
+        self.state.blobs_in_page_order()
+    }
+
+    /// Brings a blob onto local disk without reading it; a replica uses this
+    /// to download ahead of the page being viewed.
+    pub async fn fetch_blob(&self, id: BlobId) -> Result<()> {
+        self.storage.blobs().fetch(id).await.map_err(Into::into)
     }
 
     #[must_use]

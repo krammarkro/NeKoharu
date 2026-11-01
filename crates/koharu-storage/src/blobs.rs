@@ -1,7 +1,9 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs::{self, File},
+    future::Future,
     path::{Path, PathBuf},
+    pin::Pin,
     sync::{Arc, Weak},
 };
 
@@ -15,11 +17,26 @@ use crate::{BlobId, Error, Result, durability};
 
 const MMAP_MIN_BYTES: u64 = 256 * 1024;
 
+/// Where a replica's blobs come from the first time something reads them.
+/// Fetched bytes are checked against their id before they are kept.
+pub trait BlobOrigin: Send + Sync + 'static {
+    fn fetch(&self, id: BlobId) -> Pin<Box<dyn Future<Output = Result<Bytes>> + Send + '_>>;
+}
+
+struct Origin {
+    source: Arc<dyn BlobOrigin>,
+    /// One download per blob at a time; a reader that waited finds the file.
+    fetching: Mutex<HashMap<BlobId, Arc<tokio::sync::Mutex<()>>>>,
+}
+
 pub(crate) struct BlobStore {
     root: PathBuf,
     _lock: File,
     _temporary: Option<TempDir>,
     leases: Mutex<Vec<Weak<BTreeSet<BlobId>>>>,
+    /// Set for a replica: its blob directory is a cache that starts empty and
+    /// is shared with other replicas, so a referenced blob may not be on disk.
+    origin: Option<Origin>,
 }
 
 impl BlobStore {
@@ -29,6 +46,22 @@ impl BlobStore {
             _lock: lock,
             _temporary: temporary,
             leases: Mutex::new(Vec::new()),
+            origin: None,
+        }
+    }
+
+    pub(crate) fn replica(
+        cache: PathBuf,
+        lock: File,
+        temporary: TempDir,
+        origin: Arc<dyn BlobOrigin>,
+    ) -> Self {
+        Self {
+            origin: Some(Origin {
+                source: origin,
+                fetching: Mutex::new(HashMap::new()),
+            }),
+            ..Self::new(cache, lock, Some(temporary))
         }
     }
 
@@ -59,6 +92,9 @@ impl BlobStore {
     }
 
     pub(crate) fn verify_references(&self, ids: &BTreeSet<BlobId>) -> Result<()> {
+        if self.origin.is_some() {
+            return Ok(());
+        }
         for id in ids {
             if !self.path(*id).try_exists()? {
                 return Err(Error::BlobNotFound(*id));
@@ -73,12 +109,14 @@ impl BlobStore {
             if target.try_exists()? {
                 continue;
             }
-            let bytes = blobs
-                .inner
-                .available
-                .get(&id)
-                .ok_or(Error::BlobNotFound(id))?;
-            durability::publish(&target, bytes)?;
+            let Some(bytes) = blobs.inner.available.get(&id) else {
+                if self.origin.is_some() {
+                    // Still on the origin; it is fetched when first read.
+                    continue;
+                }
+                return Err(Error::BlobNotFound(id));
+            };
+            durability::publish_new(&target, bytes)?;
         }
         Ok(())
     }
@@ -89,6 +127,10 @@ impl BlobStore {
     }
 
     pub(crate) fn collect(&self, saved: BTreeSet<BlobId>) -> Result<(usize, u64)> {
+        // A replica's cache is shared with other replicas; none of them owns it.
+        if self.origin.is_some() {
+            return Ok((0, 0));
+        }
         let mut marked = saved;
         let mut leases = self.leases.lock();
         leases.retain(|lease| {
@@ -132,6 +174,37 @@ impl BlobStore {
             }
         }
         Ok((removed, bytes))
+    }
+
+    /// Downloads a blob the replica does not hold yet. Returns `None` when it
+    /// is already on disk.
+    async fn fetch_missing(&self, id: BlobId) -> Result<Option<Bytes>> {
+        let Some(origin) = &self.origin else {
+            return Ok(None);
+        };
+        let path = self.path(id);
+        if path.try_exists()? {
+            return Ok(None);
+        }
+        let gate = origin.fetching.lock().entry(id).or_default().clone();
+        let _turn = gate.lock().await;
+        let fetched = async {
+            if path.try_exists()? {
+                return Ok(None);
+            }
+            let bytes = origin.source.fetch(id).await?;
+            if BlobId::for_bytes(&bytes) != id {
+                return Err(Error::invalid(format!("blob {id} has mismatched bytes")));
+            }
+            let kept = bytes.clone();
+            tokio::task::spawn_blocking(move || durability::publish_new(&path, &kept))
+                .await
+                .context("blob cache task failed")??;
+            Ok(Some(bytes))
+        }
+        .await;
+        origin.fetching.lock().remove(&id);
+        fetched
     }
 
     fn path(&self, id: BlobId) -> PathBuf {
@@ -189,11 +262,26 @@ impl Blobs {
         if let Some(bytes) = self.inner.available.get(&id) {
             return Ok(bytes.clone());
         }
+        if let Some(bytes) = self.inner.store.fetch_missing(id).await? {
+            return Ok(bytes);
+        }
         let path = self.inner.store.path(id);
         let lease = self.inner.lease.clone();
         tokio::task::spawn_blocking(move || map_or_read(&path, lease))
             .await
             .context("blob read task failed")?
+    }
+
+    /// Makes sure a referenced blob is on local disk without reading it, so a
+    /// replica can download ahead of what is being viewed.
+    pub async fn fetch(&self, id: BlobId) -> Result<()> {
+        if !self.contains(id) {
+            return Err(Error::BlobNotFound(id));
+        }
+        if self.inner.available.contains_key(&id) {
+            return Ok(());
+        }
+        self.inner.store.fetch_missing(id).await.map(drop)
     }
 
     pub(crate) fn derive(

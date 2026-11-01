@@ -4,15 +4,16 @@ use std::{collections::HashMap, sync::Arc};
 
 use vello::{
     FontEmbolden, Glyph, Scene,
-    kurbo::{Affine, BezPath, Diagonal2, Join, Rect},
-    peniko::{Blob, Color, Fill, FontData, Mix},
+    kurbo::{Affine, BezPath, Diagonal2, Join, Rect, Shape, Stroke},
+    peniko::{Blob, Color, Compose, Fill, FontData, Mix},
 };
 
 use crate::{
     Bounds, CompositionCommand, Error, FillRule, LayerId, LayerKind, PathElement, PreparedContent,
     PreparedElementFrame, PreparedFrame, PreparedFrameBundle, PreparedFrameManifest, PreparedPath,
-    PreparedResource, PreparedResourceStore, PreparedScene, PreparedSceneCommand, Presentation,
-    RasterDraw, ResourceId, Result, Revision,
+    PreparedResource, PreparedResourceStore, PreparedScene, PreparedSceneCommand,
+    PreparedStrokePath, Presentation, RasterDraw, ResourceId, Result, Revision, StrokeJoin,
+    StrokePosition,
 };
 
 #[derive(Clone)]
@@ -504,9 +505,51 @@ fn compile_scene(
                     &path,
                 );
             }
+            PreparedSceneCommand::StrokePath(prepared) => draw_stroke(&mut scene, prepared),
         }
     }
     Ok(scene)
+}
+
+fn draw_stroke(scene: &mut Scene, prepared: &PreparedStrokePath) {
+    let path = compile_path(&prepared.path);
+    let fill = match prepared.path.fill {
+        FillRule::NonZero => Fill::NonZero,
+        FillRule::EvenOdd => Fill::EvenOdd,
+    };
+    let transform = Affine::new(prepared.path.transform);
+    let color = rgba(prepared.path.color);
+    let join = match prepared.join {
+        StrokeJoin::Round => Join::Round,
+        StrokeJoin::Miter => Join::Miter,
+        StrokeJoin::Bevel => Join::Bevel,
+    };
+    let width = match prepared.position {
+        StrokePosition::Center => prepared.width,
+        StrokePosition::Outside | StrokePosition::Inside => prepared.width * 2.0,
+    };
+    let stroke = Stroke::new(width).with_join(join).with_miter_limit(4.0);
+    match prepared.position {
+        StrokePosition::Center => scene.stroke(&stroke, transform, color, None, &path),
+        StrokePosition::Inside => {
+            scene.push_clip_layer(fill, transform, &path);
+            scene.stroke(&stroke, transform, color, None, &path);
+            scene.pop_layer();
+        }
+        StrokePosition::Outside => {
+            let bounds = path
+                .bounding_box()
+                .inflate(prepared.width * 4.0 + 1.0, prepared.width * 4.0 + 1.0);
+            // Isolate the border before removing its inward half. This preserves transparent
+            // text and never erases the artwork or a previously drawn layer.
+            scene.push_layer(Fill::NonZero, Mix::Normal, 1.0, transform, &bounds);
+            scene.stroke(&stroke, transform, color, None, &path);
+            scene.push_layer(Fill::NonZero, Compose::DestOut, 1.0, transform, &bounds);
+            scene.fill(fill, transform, rgba([0, 0, 0, 255]), None, &path);
+            scene.pop_layer();
+            scene.pop_layer();
+        }
+    }
 }
 
 fn compile_path(prepared: &PreparedPath) -> BezPath {

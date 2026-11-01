@@ -19,6 +19,7 @@ use super::{
     project::{
         CurrentProject, Page, PageSummary, Project, ProjectInfo, ProjectLibrary, ProjectSummary,
     },
+    session::{SessionChannel, SessionInfo, publish as publish_session},
 };
 
 #[derive(Clone, Debug, Serialize, Type)]
@@ -92,6 +93,7 @@ pub(crate) struct DownloadChannel {
 pub enum DownloadState {
     Running,
     Finished,
+    Cancelled,
     Failed,
 }
 
@@ -156,14 +158,18 @@ pub(crate) async fn subscribe(
     on_download: Channel<Download>,
     on_resources: Channel<ModelResources>,
     on_project: Channel<Option<ProjectInfo>>,
+    on_session: Channel<SessionInfo>,
 ) -> std::result::Result<StartupState, Error> {
     handle.state::<Initialization>().wait().await?;
+
+    tracing::info!("frontend subscribed to runtime channels");
 
     *handle.state::<CanvasChannel>().channel.lock() = Some(on_canvas);
     *handle.state::<JobChannel>().channel.lock() = Some(on_job);
     *handle.state::<DownloadChannel>().channel.lock() = Some(on_download);
     *handle.state::<ResourceChannel>().channel.lock() = Some(on_resources);
     *handle.state::<ProjectChannel>().channel.lock() = Some(on_project);
+    handle.state::<SessionChannel>().attach(on_session);
 
     let canvas = handle.state::<Desktop>().canvas_state();
     let preferences = Preferences::load()?;
@@ -180,7 +186,11 @@ pub(crate) async fn subscribe(
     })
 }
 
-async fn replace_project(handle: &AppHandle<CefRuntime>, opened: Project) -> Result<()> {
+pub(crate) async fn replace_project(handle: &AppHandle<CefRuntime>, opened: Project) -> Result<()> {
+    // The open project is going away, so any session serving or following it
+    // must end first.
+    super::session::stop(handle).await;
+    publish_session(handle, SessionInfo::default());
     let snapshot = opened.snapshot();
     let page = opened.active_page();
     let info = opened.info();
@@ -310,7 +320,9 @@ pub(crate) async fn delete_project(
     Ok(())
 }
 
-async fn close_current_project(handle: &AppHandle<CefRuntime>) -> Result<()> {
+pub(crate) async fn close_current_project(handle: &AppHandle<CefRuntime>) -> Result<()> {
+    super::session::stop(handle).await;
+    publish_session(handle, SessionInfo::default());
     handle.state::<AgentState>().reset().await;
     let processing = handle.state::<Processing>();
     for stop in processing.stops.lock().values() {
