@@ -8,4 +8,6 @@ This package owns Koharu's browser/native boundary:
 
 The bridge package builds only its WASM output. The root frontend tasks sequence that build before starting or building the consuming Next.js app. During development, `nodemon` rebuilds the bridge when `koharu-canvas` or `koharu-rasterizer` changes. `npm prefix` supplies the absolute workspace root directly to the package commands, so they do not depend on parent traversal or shell environment variables. Because the generated glue is imported from this package, Next.js includes it in the Turbopack module graph and refreshes the client after a successful rebuild.
 
+`wasm-pack` is installed as a native Cargo tool by the root `postinstall` script. Bun's `bun x wasm-pack` wrapper is not used because it does not reliably expose the package executable.
+
 Regenerate the protocol with `cargo run -p koharu-app --bin generate`. Do not edit generated protocol or WASM output by hand.
