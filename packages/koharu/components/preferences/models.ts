@@ -32,7 +32,13 @@ export const modelNames: Record<ModelName, string> = {
 export function defaultModel(model: ModelName): PipelineModel {
   switch (model) {
     case 'koharu-layout-rfdetr-seg-2xl':
-      return { model, text_threshold: null, bubble_threshold: null, panel_threshold: null }
+      return {
+        model,
+        text_threshold: null,
+        bubble_threshold: null,
+        panel_threshold: null,
+        normalize_bubble_tails: true,
+      }
     case 'paddleocr-vl-1.6':
     case 'pp-ocrv5-cyrillic':
     case 'manga-ocr':
@@ -76,6 +82,7 @@ export function replaceStage(
                   text_threshold: model.text_threshold ?? null,
                   bubble_threshold: model.bubble_threshold ?? null,
                   panel_threshold: model.panel_threshold ?? null,
+                  normalize_bubble_tails: model.normalize_bubble_tails ?? true,
                 }
               : (config.processor?.['koharu-layout-rfdetr-seg-2xl'] ?? null),
         },

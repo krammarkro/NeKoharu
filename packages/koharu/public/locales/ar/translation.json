@@ -491,6 +491,8 @@
       "options": {
         "bubbleThreshold": "عتبة الفقاعات",
         "negativePrompt": "الطلب السلبي",
+        "normalizeBubbleTails": "تجاهل ذيول الفقاعات عند تنسيق النص",
+        "normalizeBubbleTailsDescription": "استبعاد أطراف المؤشرات عند ملاءمة النص داخل الفقاعة.",
         "panelThreshold": "عتبة الألواح",
         "prompt": "الطلب",
         "textThreshold": "عتبة النص"

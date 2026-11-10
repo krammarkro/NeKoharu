@@ -531,3 +531,23 @@ mod tests {
         ));
     }
 }
+
+#[test]
+fn persists_bubble_tail_normalization_preference() {
+    let legacy: PipelineConfig = toml::from_str(
+        r#"
+            [detection]
+            model = "koharu-layout-rfdetr-seg-2xl"
+        "#,
+    )
+    .unwrap();
+    let mut config = legacy.clone();
+    let DetectionModel::KoharuLayoutRFDetrSeg2XL(settings) = &mut config.detection;
+    assert!(settings.normalize_bubble_tails);
+    settings.normalize_bubble_tails = false;
+
+    let serialized = toml::to_string(&config).unwrap();
+    let restored = toml::from_str::<PipelineConfig>(&serialized).unwrap();
+    let DetectionModel::KoharuLayoutRFDetrSeg2XL(settings) = restored.detection;
+    assert!(!settings.normalize_bubble_tails);
+}

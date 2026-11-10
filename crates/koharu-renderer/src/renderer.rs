@@ -10,11 +10,11 @@ use arc_swap::ArcSwap;
 use futures::future::try_join_all;
 use koharu_rasterizer::{RasterOptions, Rasterizer};
 use koharu_scene::{
-    Asset, AssetRole, BlobId, Change, Component, ComponentOwner, EntityChange, EntityId, FitsTo,
-    FlowsIn, Geometry, Group, OcrAnalysis, Origin, Page, Presents, RasterLayer, RasterLayerKind,
-    RecognizedFrom, Region, RelationChange, RelationId, RelationSpec, Revision, Snapshot,
-    TextAlignment, TextDirection, TextLayout as SceneTextLayout, TextLayoutKind, Translation,
-    Typography, Visibility,
+    Asset, AssetRole, BlobId, BubbleFlowGeometry, Change, Component, ComponentOwner, EntityChange,
+    EntityId, FitsTo, FlowsIn, Geometry, Group, OcrAnalysis, Origin, Page, Presents, RasterLayer,
+    RasterLayerKind, RecognizedFrom, Region, RelationChange, RelationId, RelationSpec, Revision,
+    Snapshot, TextAlignment, TextDirection, TextLayout as SceneTextLayout, TextLayoutKind,
+    Translation, Typography, Visibility,
 };
 use parking_lot::Mutex;
 use rayon::prelude::*;
@@ -900,7 +900,8 @@ impl Traversal<'_> {
         dependencies.insert(RenderDependency::Relation(relation.id()));
         dependencies.insert(RenderDependency::Entity(target));
         dependencies.insert(component_dependency::<Geometry>(target));
-        let geometry = self.snapshot.analysis_region(target)?.geometry()?;
+        dependencies.insert(component_dependency::<BubbleFlowGeometry>(target));
+        let geometry = flow_geometry(self.snapshot, target)?;
         let Some(frame) = geometry_frame(&geometry, None) else {
             return Ok(None);
         };
@@ -983,21 +984,21 @@ fn resolve_balloon_flows(snapshot: &Snapshot, page: EntityId) -> Result<BalloonF
     let mut placements = HashMap::new();
     let mut all_dependencies = BTreeSet::new();
     for (balloon, seeds) in groups {
-        let region = snapshot.analysis_region(balloon)?;
-        let geometry = region.geometry()?;
-        let Some(frame) = geometry_frame(&geometry, None) else {
-            continue;
-        };
-        let balloon_contour = contour(&geometry, frame);
         let mut dependencies = BTreeSet::from([
             RenderDependency::Entity(balloon),
             component_dependency::<Geometry>(balloon),
+            component_dependency::<BubbleFlowGeometry>(balloon),
             component_dependency::<Region>(balloon),
             RenderDependency::RelationTargetQuery {
                 target: balloon,
                 kind: FlowsIn::KIND.to_owned(),
             },
         ]);
+        let geometry = flow_geometry(snapshot, balloon)?;
+        let Some(frame) = geometry_frame(&geometry, None) else {
+            continue;
+        };
+        let balloon_contour = contour(&geometry, frame);
         for seed in &seeds {
             dependencies.extend(seed.dependencies.iter().cloned());
         }
@@ -1054,6 +1055,13 @@ fn resolve_balloon_flows(snapshot: &Snapshot, page: EntityId) -> Result<BalloonF
         placements,
         dependencies: all_dependencies,
     })
+}
+
+fn flow_geometry(snapshot: &Snapshot, balloon: EntityId) -> Result<Geometry> {
+    let geometry = snapshot.analysis_region(balloon)?.geometry()?;
+    Ok(snapshot
+        .component::<BubbleFlowGeometry>(balloon)?
+        .map_or(geometry, |flow| flow.geometry))
 }
 
 fn flow_anchor(
@@ -2052,6 +2060,7 @@ mod tests {
     async fn joined_balloon_flows_preserve_layout_when_transformed() {
         let mut session = Session::memory().await.unwrap();
         let mut ids = None;
+        let flow_geometry = Geometry::rectangle(20.0, 20.0, 120.0, 40.0);
         let create = session
             .snapshot()
             .patch(|edit| {
@@ -2061,6 +2070,13 @@ mod tests {
                     At::End,
                     &Geometry::rectangle(20.0, 20.0, 120.0, 60.0),
                     None,
+                )?;
+                edit.set(
+                    bubble,
+                    &BubbleFlowGeometry {
+                        origin: Origin::User,
+                        geometry: flow_geometry.clone(),
+                    },
                 )?;
                 let mut layers = Vec::new();
                 for (index, (x, source, translation)) in [
@@ -2123,7 +2139,8 @@ mod tests {
             .iter()
             .find(|layer| layer.entity == layers[0])
             .unwrap();
-        assert_eq!(
+        assert_eq!(first.geometry, flow_geometry);
+        assert_ne!(
             first.geometry,
             base.analysis_region(bubble).unwrap().geometry().unwrap()
         );

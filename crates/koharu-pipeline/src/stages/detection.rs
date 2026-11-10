@@ -22,9 +22,9 @@ use koharu_ml::koharu_layout_rfdetr_seg_2xl::{
     KoharuLayoutThresholds,
 };
 use koharu_scene::{
-    AssetInput, AssetMetadata, AssetRole, At, BubbleRegion, DetectionAnalysis, DetectionLabel,
-    EntityId, EntityOrigin, FitsTo, FlowsIn, Generation, Geometry, Inside, Origin, PanelRegion,
-    Point, RecognizedFrom, Region, RegionKind, RegionSpec, RemovePolicy, TextLayout,
+    AssetInput, AssetMetadata, AssetRole, At, BubbleFlowGeometry, BubbleRegion, DetectionAnalysis,
+    DetectionLabel, EntityId, EntityOrigin, FitsTo, FlowsIn, Generation, Geometry, Inside, Origin,
+    PanelRegion, Point, RecognizedFrom, Region, RegionKind, RegionSpec, RemovePolicy, TextLayout,
     TextLayoutKind, TextRegion, TextRole, Typography, WritingMode,
 };
 use rayon::prelude::*;
@@ -37,6 +37,8 @@ use crate::{DetectionModel, ModelCell};
 const MODEL_ID: &str = "mayocream/koharu-layout-rfdetr-seg-2xl-1152";
 const MODEL_NAME: &str = "koharu-layout-rfdetr-seg-2xl";
 const PRODUCER: &str = "dev.koharu.pipeline.detection";
+const BUBBLE_TAIL_QUANTILE: f64 = 0.05;
+const BUBBLE_TAIL_MIN_PROTRUSION: f64 = 0.08;
 const ANGLE_SNAP_DEGREES: f32 = 3.0;
 /// Context kept around a text box crop, as a share of the box's longer side,
 /// so lettering the box edge cuts through still reads as a whole shape.
@@ -52,12 +54,29 @@ const MIN_EXTREME_COLOR_PIXELS: u32 = 4;
 const MIN_MEASURED_STROKE_WIDTH: u8 = 2;
 const DIALOGUE_MASK_CONTAINMENT_THRESHOLD: f32 = 0.9;
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default)]
 pub struct KoharuLayoutRFDetrSeg2XLConfig {
     pub text_threshold: Option<f32>,
     pub bubble_threshold: Option<f32>,
     pub panel_threshold: Option<f32>,
+    #[serde(default = "default_normalize_bubble_tails")]
+    pub normalize_bubble_tails: bool,
+}
+
+fn default_normalize_bubble_tails() -> bool {
+    true
+}
+
+impl Default for KoharuLayoutRFDetrSeg2XLConfig {
+    fn default() -> Self {
+        Self {
+            text_threshold: None,
+            bubble_threshold: None,
+            panel_threshold: None,
+            normalize_bubble_tails: default_normalize_bubble_tails(),
+        }
+    }
 }
 
 pub(super) struct Processor {
@@ -149,6 +168,7 @@ impl StageProcessor for Processor {
 struct Model {
     network: Arc<Mutex<KoharuLayoutRFDetrSeg2XL>>,
     thresholds: KoharuLayoutThresholds,
+    normalize_bubble_tails: bool,
 }
 
 impl Model {
@@ -162,6 +182,7 @@ impl Model {
         Ok(Self {
             network: Arc::new(Mutex::new(network)),
             thresholds,
+            normalize_bubble_tails: config.normalize_bubble_tails,
         })
     }
 
@@ -176,7 +197,14 @@ impl Model {
             Some(polygon) => self.detect_in_box(image.clone(), &polygon).await?,
             None => self.detect(image.clone()).await?,
         };
-        build_patch(&input, &image, output, &generation(PRODUCER, MODEL_ID)?).await
+        build_patch(
+            &input,
+            &image,
+            output,
+            &generation(PRODUCER, MODEL_ID)?,
+            self.normalize_bubble_tails,
+        )
+        .await
     }
 
     /// Detects inside a text box on a crop of it, where small lettering such
@@ -278,6 +306,7 @@ async fn build_patch(
     image: &DynamicImage,
     output: KoharuLayoutDetections,
     generation: &Generation,
+    normalize_bubble_tails: bool,
 ) -> Result<koharu_scene::Patch> {
     let page = input.page;
     let mut edit = input.scene.edit_as(generation.clone());
@@ -288,9 +317,17 @@ async fn build_patch(
         remove_previous_regions(input, &mut edit, generation)
             .context("failed to replace the previous detection regions")?;
     }
-    write_page(input, &mut edit, page, image, output, generation)
-        .await
-        .context("failed to write detection output")?;
+    write_page(
+        input,
+        &mut edit,
+        page,
+        image,
+        output,
+        generation,
+        normalize_bubble_tails,
+    )
+    .await
+    .context("failed to write detection output")?;
     finish(edit)
 }
 
@@ -330,6 +367,7 @@ async fn write_page(
     image: &DynamicImage,
     output: KoharuLayoutDetections,
     generation: &Generation,
+    normalize_bubble_tails: bool,
 ) -> Result<()> {
     let KoharuLayoutDetections {
         mut detections,
@@ -356,8 +394,16 @@ async fn write_page(
     sort_by_layout(&mut detections);
 
     let image = image.to_rgb8();
-    let regions = write_regions(&input.scene, edit, page, &image, &detections, generation)
-        .context("failed to write detected regions")?;
+    let regions = write_regions(
+        &input.scene,
+        edit,
+        page,
+        &image,
+        &detections,
+        generation,
+        normalize_bubble_tails,
+    )
+    .context("failed to write detected regions")?;
     link_dialogue_regions(edit, &regions, generation)
         .context("failed to associate detected text with dialogue regions")?;
     write_masks(input, edit, page, &detections, size)
@@ -372,6 +418,7 @@ fn write_regions<'a>(
     image: &RgbImage,
     detections: &'a [KoharuLayoutDetection],
     generation: &Generation,
+    normalize_bubble_tails: bool,
 ) -> Result<PageRegions<'a>> {
     let mut regions = PageRegions::default();
     let inferred = detections
@@ -392,8 +439,15 @@ fn write_regions<'a>(
         None
     };
     for (index, (detection, inferred)) in detections.iter().zip(inferred).enumerate() {
-        match write_region(edit, page, detection, inferred, generation)
-            .with_context(|| format!("failed to write {} detection {index}", detection.label))?
+        match write_region(
+            edit,
+            page,
+            detection,
+            inferred,
+            generation,
+            normalize_bubble_tails,
+        )
+        .with_context(|| format!("failed to write {} detection {index}", detection.label))?
         {
             RegionOutput::Bubble(bubble) => regions.bubbles.push(bubble),
             RegionOutput::Text(text) => {
@@ -415,6 +469,7 @@ fn write_region<'a>(
     detection: &'a KoharuLayoutDetection,
     inferred: Option<InferredTypography>,
     generation: &Generation,
+    normalize_bubble_tails: bool,
 ) -> Result<RegionOutput<'a>> {
     let entity = edit
         .add_entity(page, At::End)
@@ -432,6 +487,18 @@ fn write_region<'a>(
     };
     edit.set(entity, &geometry)
         .context("failed to set detected region geometry")?;
+    if detection.label == "bubble" && normalize_bubble_tails {
+        if let Some(flow_geometry) = normalized_bubble_flow_geometry(&detection.mask) {
+            edit.set(
+                entity,
+                &BubbleFlowGeometry {
+                    origin: Origin::Generated(generation.clone()),
+                    geometry: flow_geometry,
+                },
+            )
+            .context("failed to set normalized bubble flow geometry")?;
+        }
+    }
     edit.set(
         entity,
         &Region {
@@ -1437,6 +1504,121 @@ fn mask_geometry(mask: &KoharuLayoutMask) -> Option<Geometry> {
     })
 }
 
+fn normalized_bubble_flow_geometry(mask: &KoharuLayoutMask) -> Option<Geometry> {
+    if !valid_mask(mask) {
+        return None;
+    }
+
+    let pixels = mask
+        .pixels
+        .iter()
+        .enumerate()
+        .filter_map(|(index, value)| {
+            (*value != 0).then(|| {
+                (
+                    (index as u32 % mask.width) as f64 + 0.5,
+                    (index as u32 / mask.width) as f64 + 0.5,
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    if pixels.len() < 3 {
+        return None;
+    }
+
+    let count = pixels.len() as f64;
+    let center = pixels.iter().fold((0.0, 0.0), |sum, point| {
+        (sum.0 + point.0 / count, sum.1 + point.1 / count)
+    });
+    let (mut variance_x, mut variance_y, mut covariance) = (0.0, 0.0, 0.0);
+    for &(x, y) in &pixels {
+        let (x, y) = (x - center.0, y - center.1);
+        variance_x += x * x;
+        variance_y += y * y;
+        covariance += x * y;
+    }
+    let angle = 0.5 * (2.0 * covariance).atan2(variance_x - variance_y);
+    let (sin, cos) = angle.sin_cos();
+    let projections = pixels
+        .iter()
+        .map(|&(x, y)| {
+            let (x, y) = (x - center.0, y - center.1);
+            (x * cos + y * sin, -x * sin + y * cos)
+        })
+        .collect::<Vec<_>>();
+    let mut axes = [
+        projections.iter().map(|point| point.0).collect::<Vec<_>>(),
+        projections.iter().map(|point| point.1).collect::<Vec<_>>(),
+    ];
+    let mut limits = [(f64::INFINITY, f64::NEG_INFINITY); 2];
+    let mut robust_limits = [(0.0, 0.0); 2];
+    for (axis, values) in axes.iter_mut().enumerate() {
+        values.sort_by(f64::total_cmp);
+        let original = (*values.first()?, *values.last()?);
+        let lower = values[((values.len() - 1) as f64 * BUBBLE_TAIL_QUANTILE) as usize];
+        let upper = values[((values.len() - 1) as f64 * (1.0 - BUBBLE_TAIL_QUANTILE)) as usize];
+        limits[axis] = original;
+        robust_limits[axis] = (lower, upper);
+    }
+    let minimum_span = (limits[0].1 - limits[0].0)
+        .min(limits[1].1 - limits[1].0)
+        .max(1.0);
+    let protrusion = minimum_span * BUBBLE_TAIL_MIN_PROTRUSION;
+    let clipped_limits = std::array::from_fn(|axis| {
+        let (minimum, maximum) = limits[axis];
+        let (robust_minimum, robust_maximum) = robust_limits[axis];
+        (
+            if robust_minimum - minimum > protrusion {
+                robust_minimum
+            } else {
+                minimum
+            },
+            if maximum - robust_maximum > protrusion {
+                robust_maximum
+            } else {
+                maximum
+            },
+        )
+    });
+    if clipped_limits == limits {
+        return None;
+    }
+
+    let mut normalized = mask.clone();
+    let mut kept = 0usize;
+    for (index, value) in normalized.pixels.iter_mut().enumerate() {
+        if *value == 0 {
+            continue;
+        }
+        let (x, y) = (
+            (index as u32 % mask.width) as f64 + 0.5 - center.0,
+            (index as u32 / mask.width) as f64 + 0.5 - center.1,
+        );
+        let projected = (x * cos + y * sin, -x * sin + y * cos);
+        if (0..2).any(|axis| {
+            projected_axis(projected, axis) < clipped_limits[axis].0
+                || projected_axis(projected, axis) > clipped_limits[axis].1
+        }) {
+            *value = 0;
+        } else {
+            kept += 1;
+        }
+    }
+    if kept < pixels.len() * 3 / 4 {
+        return None;
+    }
+
+    mask_geometry(&normalized)
+}
+
+fn projected_axis(projection: (f64, f64), axis: usize) -> f64 {
+    if axis == 0 {
+        projection.0
+    } else {
+        projection.1
+    }
+}
+
 async fn write_masks(
     input: &StageInput,
     edit: &mut koharu_scene::Edit,
@@ -2038,8 +2220,8 @@ mod tests {
         ImageSize, KoharuLayoutRFDetrSeg2XLConfig, MaskPixel, PageRegions, Processor, RegionOutput,
         StageInput, StageProcessor, box_detection, build_patch, closed_mask_for, color_palette,
         generation, infer_typography, layout_order, link_dialogue_regions, mask_containment,
-        mask_for, mask_geometry, non_maximum_suppression, normalize_text_color, polygon_bounds,
-        write_region,
+        mask_for, mask_geometry, non_maximum_suppression, normalize_text_color,
+        normalized_bubble_flow_geometry, polygon_bounds, write_region,
     };
 
     #[test]
@@ -2049,6 +2231,7 @@ mod tests {
                 text_threshold: Some(15.0),
                 bubble_threshold: Some(f32::NAN),
                 panel_threshold: Some(0.55),
+                ..Default::default()
             }),
             koharu_ml::Device::cpu(),
         );
@@ -2057,6 +2240,68 @@ mod tests {
         assert_eq!(settings.text_threshold, None);
         assert_eq!(settings.bubble_threshold, None);
         assert_eq!(settings.panel_threshold, Some(0.55));
+    }
+
+    #[test]
+    fn bubble_tail_normalization_defaults_on_and_can_be_disabled() {
+        let legacy =
+            toml::from_str::<KoharuLayoutRFDetrSeg2XLConfig>("text_threshold = 0.25").unwrap();
+        let disabled =
+            toml::from_str::<KoharuLayoutRFDetrSeg2XLConfig>("normalize_bubble_tails = false")
+                .unwrap();
+
+        assert!(legacy.normalize_bubble_tails);
+        assert!(!disabled.normalize_bubble_tails);
+    }
+
+    #[test]
+    fn normalized_bubble_flow_geometry_trims_a_narrow_pointer() {
+        let width = 100;
+        let height = 100;
+        let mut pixels = vec![0; width * height];
+        for y in 15..=69 {
+            for x in 20..=79 {
+                let dx = (x as f32 - 49.5) / 30.0;
+                let dy = (y as f32 - 42.0) / 27.0;
+                if dx * dx + dy * dy <= 1.0 {
+                    pixels[y * width + x] = u8::MAX;
+                }
+            }
+        }
+        for y in 68..=94 {
+            let half_width = ((94 - y) as f32 * 0.18).ceil() as usize + 1;
+            for x in (50 - half_width)..=(50 + half_width) {
+                pixels[y * width + x] = u8::MAX;
+            }
+        }
+        let mask = KoharuLayoutMask {
+            x: 10,
+            y: 20,
+            width: width as u32,
+            height: height as u32,
+            pixels,
+        };
+
+        let original = mask_geometry(&mask).unwrap();
+        let normalized = normalized_bubble_flow_geometry(&mask).unwrap();
+        let original_bottom = original
+            .points
+            .iter()
+            .map(|point| point.y)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let normalized_bottom = normalized
+            .points
+            .iter()
+            .map(|point| point.y)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let normalized_top = normalized
+            .points
+            .iter()
+            .map(|point| point.y)
+            .fold(f64::INFINITY, f64::min);
+
+        assert!(original_bottom - normalized_bottom > 10.0);
+        assert!(normalized_bottom > normalized_top);
     }
 
     #[tokio::test]
@@ -2311,7 +2556,7 @@ mod tests {
             detections: vec![found(12, 12), found(42, 42)],
         };
         let image = DynamicImage::new_rgb8(100, 100);
-        let patch = build_patch(&input, &image, output, &generation)
+        let patch = build_patch(&input, &image, output, &generation, true)
             .await
             .unwrap();
         let snapshot = session.commit(patch).await.unwrap().snapshot;
@@ -2609,7 +2854,8 @@ mod tests {
         let mut layer = None;
         let patch = snapshot
             .patch(|edit| {
-                let output = write_region(edit, page, &detection, inferred, &generation).unwrap();
+                let output =
+                    write_region(edit, page, &detection, inferred, &generation, true).unwrap();
                 let RegionOutput::Text(text) = output else {
                     panic!("expected a text region");
                 };

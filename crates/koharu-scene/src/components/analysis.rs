@@ -10,7 +10,32 @@ use crate::{
     id::validate_namespaced,
 };
 
-use super::{Origin, Point};
+use super::{Geometry, Origin, Point};
+
+#[revisioned(revision = 1)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+pub struct BubbleFlowGeometry {
+    pub origin: Origin,
+    pub geometry: Geometry,
+}
+
+impl Component for BubbleFlowGeometry {
+    const KIND: &'static str = "dev.koharu.analysis.bubble-flow-geometry";
+
+    fn validate(&self, context: &ValidationContext<'_>) -> Result<()> {
+        self.origin.validate()?;
+        self.geometry.validate(context)
+    }
+
+    fn origin(&self) -> Option<&Origin> {
+        Some(&self.origin)
+    }
+
+    fn set_origin(&mut self, origin: Origin) -> bool {
+        self.origin = origin;
+        true
+    }
+}
 
 #[revisioned(revision = 1)]
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, Type)]

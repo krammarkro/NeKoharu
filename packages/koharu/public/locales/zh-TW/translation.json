@@ -491,6 +491,8 @@
       "options": {
         "bubbleThreshold": "對話框閾值",
         "negativePrompt": "負面提示詞",
+        "normalizeBubbleTails": "排版時忽略對話框尾巴",
+        "normalizeBubbleTailsDescription": "文字配合對話框時排除指向尖端。",
         "panelThreshold": "分鏡閾值",
         "prompt": "提示詞",
         "textThreshold": "文字閾值"

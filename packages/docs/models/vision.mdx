@@ -10,7 +10,7 @@ Open **Settings → Pipeline** and choose a model for each stage. Models own the
 
 **Koharu Layout RF-DETR Seg 2XL** detects text, speech bubbles, and panels, and produces segmentation data for later stages.
 
-Text, bubble, and panel thresholds control how much evidence each class needs. Lower thresholds retain more uncertain regions and may increase false positives. Compare several representative pages before changing thresholds. Detection skips a page that already has text regions, so delete them to detect the page again with new thresholds.
+Text, bubble, and panel thresholds control how much evidence each class needs. Lower thresholds retain more uncertain regions and may increase false positives. **Ignore bubble tails for text layout** is enabled by default; it estimates the speech-bubble body independently of narrow pointer tips when fitting generated text. Turn it off to use the full detected bubble outline. Compare several representative pages before changing thresholds. Detection skips a page that already has text regions, so delete them to detect the page again with new thresholds.
 
 ## OCR
 

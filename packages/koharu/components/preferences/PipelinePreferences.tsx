@@ -28,6 +28,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@koharu/ui/components/select'
+import { Switch } from '@koharu/ui/components/switch'
 
 const stages = [
   ['detection', Search],
@@ -114,31 +115,50 @@ function ModelOptions({
   switch (model.model) {
     case 'koharu-layout-rfdetr-seg-2xl':
       return (
-        <div className='grid grid-cols-3 gap-2'>
-          <NumberField
-            label={t('settings.pipeline.options.textThreshold')}
-            value={model.text_threshold ?? null}
-            min={0}
-            max={1}
-            step={0.05}
-            onChange={(text_threshold) => onChange({ ...model, text_threshold })}
-          />
-          <NumberField
-            label={t('settings.pipeline.options.bubbleThreshold')}
-            value={model.bubble_threshold ?? null}
-            min={0}
-            max={1}
-            step={0.05}
-            onChange={(bubble_threshold) => onChange({ ...model, bubble_threshold })}
-          />
-          <NumberField
-            label={t('settings.pipeline.options.panelThreshold')}
-            value={model.panel_threshold ?? null}
-            min={0}
-            max={1}
-            step={0.05}
-            onChange={(panel_threshold) => onChange({ ...model, panel_threshold })}
-          />
+        <div className='grid gap-3'>
+          <div className='grid grid-cols-3 gap-2'>
+            <NumberField
+              label={t('settings.pipeline.options.textThreshold')}
+              value={model.text_threshold ?? null}
+              min={0}
+              max={1}
+              step={0.05}
+              onChange={(text_threshold) => onChange({ ...model, text_threshold })}
+            />
+            <NumberField
+              label={t('settings.pipeline.options.bubbleThreshold')}
+              value={model.bubble_threshold ?? null}
+              min={0}
+              max={1}
+              step={0.05}
+              onChange={(bubble_threshold) => onChange({ ...model, bubble_threshold })}
+            />
+            <NumberField
+              label={t('settings.pipeline.options.panelThreshold')}
+              value={model.panel_threshold ?? null}
+              min={0}
+              max={1}
+              step={0.05}
+              onChange={(panel_threshold) => onChange({ ...model, panel_threshold })}
+            />
+          </div>
+          <div className='flex h-8 items-center justify-between gap-3'>
+            <div className='grid gap-0.5'>
+              <span className='text-[10px] text-muted-foreground'>
+                {t('settings.pipeline.options.normalizeBubbleTails')}
+              </span>
+              <span className='text-[9px] leading-3 text-muted-foreground'>
+                {t('settings.pipeline.options.normalizeBubbleTailsDescription')}
+              </span>
+            </div>
+            <Switch
+              aria-label={t('settings.pipeline.options.normalizeBubbleTails')}
+              checked={model.normalize_bubble_tails ?? true}
+              onCheckedChange={(normalize_bubble_tails) =>
+                onChange({ ...model, normalize_bubble_tails })
+              }
+            />
+          </div>
         </div>
       )
     case 'flux2-klein':

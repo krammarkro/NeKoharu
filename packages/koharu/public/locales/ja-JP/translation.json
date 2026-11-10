@@ -491,6 +491,8 @@
       "options": {
         "bubbleThreshold": "吹き出ししきい値",
         "negativePrompt": "ネガティブプロンプト",
+        "normalizeBubbleTails": "吹き出しのしっぽを文字配置から除外",
+        "normalizeBubbleTailsDescription": "文字を吹き出しに収める際、ポインター部分を除外します。",
         "panelThreshold": "コマしきい値",
         "prompt": "プロンプト",
         "textThreshold": "テキストしきい値"

@@ -491,6 +491,8 @@
       "options": {
         "bubbleThreshold": "Konuşma balonu eşiği",
         "negativePrompt": "Negatif istem",
+        "normalizeBubbleTails": "Metin yerleşiminde balon kuyruklarını yok say",
+        "normalizeBubbleTailsDescription": "Metni balona sığdırırken işaretçi uçlarını hariç tut.",
         "panelThreshold": "Panel eşiği",
         "prompt": "İstem",
         "textThreshold": "Metin eşiği"

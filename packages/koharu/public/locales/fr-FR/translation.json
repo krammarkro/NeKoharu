@@ -491,6 +491,8 @@
       "options": {
         "bubbleThreshold": "Seuil des bulles",
         "negativePrompt": "Prompt négatif",
+        "normalizeBubbleTails": "Ignorer les queues des bulles pour le texte",
+        "normalizeBubbleTailsDescription": "Exclure les pointes lors de l'ajustement du texte à la bulle.",
         "panelThreshold": "Seuil des cases",
         "prompt": "Prompt",
         "textThreshold": "Seuil du texte"

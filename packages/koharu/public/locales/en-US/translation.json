@@ -491,6 +491,8 @@
       "options": {
         "bubbleThreshold": "Bubble threshold",
         "negativePrompt": "Negative prompt",
+        "normalizeBubbleTails": "Ignore bubble tails for text layout",
+        "normalizeBubbleTailsDescription": "Exclude pointer tips when fitting text to a bubble.",
         "panelThreshold": "Panel threshold",
         "prompt": "Prompt",
         "textThreshold": "Text threshold"

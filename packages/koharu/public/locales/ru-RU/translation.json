@@ -491,6 +491,8 @@
       "options": {
         "bubbleThreshold": "Порог пузыря",
         "negativePrompt": "Негативный промпт",
+        "normalizeBubbleTails": "Не учитывать хвосты при размещении текста",
+        "normalizeBubbleTailsDescription": "Не учитывать кончики выносок при подгонке текста в пузырь.",
         "panelThreshold": "Порог панели",
         "prompt": "Промпт",
         "textThreshold": "Порог текста"

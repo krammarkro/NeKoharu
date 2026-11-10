@@ -491,6 +491,8 @@
       "options": {
         "bubbleThreshold": "Limite de balão",
         "negativePrompt": "Prompt negativo",
+        "normalizeBubbleTails": "Ignorar caudas ao alinhar o texto",
+        "normalizeBubbleTailsDescription": "Excluir as pontas ao ajustar o texto ao balão.",
         "panelThreshold": "Limite de quadro",
         "prompt": "Prompt",
         "textThreshold": "Limite de texto"

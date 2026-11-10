@@ -320,6 +320,7 @@ export type KoharuLayoutRFDetrSeg2XLConfig = {
 	text_threshold?: number | null,
 	bubble_threshold?: number | null,
 	panel_threshold?: number | null,
+	normalize_bubble_tails?: boolean,
 };
 
 export type LanguageChoice = {
@@ -625,4 +626,3 @@ export type TypographyUpdate = {
 };
 
 export type WritingMode = "Horizontal" | "Vertical";
-

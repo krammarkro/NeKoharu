@@ -491,6 +491,8 @@
       "options": {
         "bubbleThreshold": "말풍선 임곗값",
         "negativePrompt": "네거티브 프롬프트",
+        "normalizeBubbleTails": "텍스트 배치에서 말풍선 꼬리 제외",
+        "normalizeBubbleTailsDescription": "말풍선에 텍스트를 맞출 때 꼬리 끝을 제외합니다.",
         "panelThreshold": "패널 임곗값",
         "prompt": "프롬프트",
         "textThreshold": "텍스트 임곗값"

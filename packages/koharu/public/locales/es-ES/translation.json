@@ -491,6 +491,8 @@
       "options": {
         "bubbleThreshold": "Umbral de bocadillo",
         "negativePrompt": "Indicación negativa",
+        "normalizeBubbleTails": "Ignorar colas al ajustar el texto",
+        "normalizeBubbleTailsDescription": "Excluir las puntas al encajar el texto en el bocadillo.",
         "panelThreshold": "Umbral de viñeta",
         "prompt": "Indicación",
         "textThreshold": "Umbral de texto"

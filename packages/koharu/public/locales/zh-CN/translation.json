@@ -491,6 +491,8 @@
       "options": {
         "bubbleThreshold": "气泡阈值",
         "negativePrompt": "负面提示词",
+        "normalizeBubbleTails": "排版时忽略气泡尾巴",
+        "normalizeBubbleTailsDescription": "文字适配气泡时排除指向尖端。",
         "panelThreshold": "分镜阈值",
         "prompt": "提示词",
         "textThreshold": "文本阈值"
