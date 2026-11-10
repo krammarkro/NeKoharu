@@ -941,6 +941,7 @@ describe('greenfield editor', () => {
 
   it('navigates between pages with the arrow keys without wrapping or interrupting text input', async () => {
     installProject()
+    useKoharuStore.setState({ selectedLayers: [] })
     const pages = [
       { id: 'page', label: 'Page 1', size: { width: 1000, height: 1500 }, layers: [], regions: [] },
       {
@@ -1034,8 +1035,45 @@ describe('greenfield editor', () => {
     await waitFor(() => expect(selectPage).toHaveBeenLastCalledWith('page-2'))
   })
 
+  it('does not change pages when a text layer is selected', () => {
+    installProject()
+    queryClient.setQueryData(pageKey, {
+      id: 'page',
+      label: 'Page 1',
+      size: { width: 1000, height: 1500 },
+      layers: [textLayer],
+      regions: [],
+    })
+    queryClient.setQueryData(pagesKey, [
+      {
+        id: 'page',
+        label: 'Page 1',
+        size: { width: 1000, height: 1500 },
+        source_asset: null,
+        chapter_start: false,
+        layer_count: 1,
+      },
+      {
+        id: 'page-2',
+        label: 'Page 2',
+        size: { width: 1000, height: 1500 },
+        source_asset: null,
+        chapter_start: false,
+        layer_count: 0,
+      },
+    ])
+    useKoharuStore.setState({ selectedLayers: [textLayer.id] })
+    const selectPage = vi.spyOn(commands, 'selectPage')
+    render(<PageRail />)
+
+    fireEvent.keyDown(window, { key: 'ArrowRight' })
+
+    expect(selectPage).not.toHaveBeenCalled()
+  })
+
   it('scrolls the page rail to the active page during keyboard navigation', async () => {
     installProject()
+    useKoharuStore.setState({ selectedLayers: [] })
     const pages = Array.from({ length: 31 }, (_, index) => ({
       id: index === 0 ? 'page' : `page-${index}`,
       label: `Page ${index + 1}`,

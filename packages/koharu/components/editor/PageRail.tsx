@@ -19,6 +19,7 @@ import { useTranslation } from 'react-i18next'
 import { ResourceMonitor } from '@/components/editor/ResourceMonitor'
 import { MemberAvatar, memberName } from '@/components/editor/SessionBar'
 import { call } from '@/lib/backend'
+import { expandLayerSelection, isTextLayer } from '@/lib/document'
 import { useForkPreferences } from '@/lib/forkPreferences'
 import { activatePage, cancelPageActivation } from '@/lib/navigation'
 import {
@@ -78,7 +79,9 @@ type DropPosition = 'before' | 'after'
 export function PageRail() {
   const { t } = useTranslation()
   const pages = usePages().data ?? emptyPages
-  const active = usePage().data?.id ?? null
+  const activePage = usePage().data
+  const active = activePage?.id ?? null
+  const selectedLayers = useKoharuStore((state) => state.selectedLayers)
   const selected = useKoharuStore((state) => state.selectedPages)
   const members = useKoharuStore((state) => state.session.members)
   // Where everyone else in the session is; this instance's own page is the
@@ -196,6 +199,15 @@ export function PageRail() {
       )
         return
 
+      if (
+        (event.key === 'ArrowLeft' || event.key === 'ArrowRight') &&
+        activePage &&
+        expandLayerSelection(activePage.layers, selectedLayers).some((id) =>
+          activePage.layers.some((layer) => layer.id === id && isTextLayer(layer)),
+        )
+      )
+        return
+
       const target = event.target
       if (
         target instanceof HTMLElement &&
@@ -218,7 +230,7 @@ export function PageRail() {
 
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [active, pageVirtualizer, pages, select])
+  }, [active, activePage, pageVirtualizer, pages, select, selectedLayers])
 
   const prefetchOnIntent = (page: string) => {
     const project = queryClient.getQueryData<ProjectInfo | null>(projectKey)

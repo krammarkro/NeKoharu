@@ -59,6 +59,8 @@ import {
 import { Button } from '@koharu/ui/components/button'
 
 const BRUSH_DIAMETER_STEP = 4
+const NUDGE_STEP = 1
+const SHIFT_NUDGE_STEP = 10
 
 const canvasCursors = {
   select: undefined,
@@ -107,6 +109,11 @@ interface StrokeUpdate {
   points: Point[]
 }
 
+interface NudgeGesture {
+  originals: TransformFrame[]
+  delta: Point
+}
+
 export function CanvasWorkspace() {
   const { t } = useTranslation()
   const surface = useRef<HTMLDivElement>(null)
@@ -117,6 +124,7 @@ export function CanvasWorkspace() {
   const transformActive = useRef(false)
   const transformRevision = useRef<number | null>(null)
   const transformFinal = useRef<TransformFrame[]>([])
+  const nudge = useRef<NudgeGesture | null>(null)
   const commitPending = useRef(false)
   const commandQueue = useRef<Promise<void>>(Promise.resolve())
   const [previews, setPreviews] = useState<Record<string, Frame>>({})
@@ -246,6 +254,7 @@ export function CanvasWorkspace() {
   const cancelGesture = useCallback(() => {
     const current = gesture.current
     gesture.current = null
+    nudge.current = null
     setSelectionRect(null)
     if (current?.kind === 'paint' || current?.kind === 'erase' || current?.kind === 'inpaint') {
       strokeUpdates.clear()
@@ -505,12 +514,90 @@ export function CanvasWorkspace() {
   const clientPhysicalPoint = (clientX: number, clientY: number) =>
     physicalPoint(clientX, clientY, surface.current!.getBoundingClientRect())
 
-  const framesFor = (layers: string[]): TransformFrame[] =>
-    expandLayerSelection(page?.layers ?? [], layers).flatMap((id) => {
-      const layer = page?.layers.find((candidate) => candidate.id === id)
-      const frame = layer && selectableLayer(layer) ? controlFrame(layer, layerFrames) : null
-      return frame ? [{ element: id, frame }] : []
-    })
+  const framesFor = useCallback(
+    (layers: string[]): TransformFrame[] =>
+      expandLayerSelection(page?.layers ?? [], layers).flatMap((id) => {
+        const layer = page?.layers.find((candidate) => candidate.id === id)
+        const frame = layer && selectableLayer(layer) ? controlFrame(layer, layerFrames) : null
+        return frame ? [{ element: id, frame }] : []
+      }),
+    [layerFrames, page],
+  )
+
+  const nudgeSelected = useCallback(
+    (key: string, shiftKey: boolean): boolean => {
+      if (!page || readOnly || !selected.length || commitPending.current) return false
+      const layers = expandLayerSelection(page.layers, selected)
+      if (
+        !layers.length ||
+        layers.some((id) => !page.layers.some((layer) => layer.id === id && isTextLayer(layer)))
+      )
+        return false
+
+      const current =
+        nudge.current ??
+        (() => {
+          const originals = framesFor(layers)
+          if (!originals.length) return null
+          beginTransform(originals)
+          if (!transformActive.current) return null
+          const next = { originals, delta: { x: 0, y: 0 } }
+          nudge.current = next
+          return next
+        })()
+      if (!current) return false
+
+      const step = shiftKey ? SHIFT_NUDGE_STEP : NUDGE_STEP
+      const delta =
+        key === 'ArrowLeft'
+          ? { x: -step, y: 0 }
+          : key === 'ArrowRight'
+            ? { x: step, y: 0 }
+            : key === 'ArrowUp'
+              ? { x: 0, y: -step }
+              : { x: 0, y: step }
+      const next = {
+        ...current,
+        delta: {
+          x: current.delta.x + delta.x,
+          y: current.delta.y + delta.y,
+        },
+      }
+      nudge.current = next
+      updateTransform(translateFrames(next.originals, next.delta))
+      return true
+    },
+    [beginTransform, framesFor, page, readOnly, selected, updateTransform],
+  )
+
+  const finishNudge = useCallback(() => {
+    if (!nudge.current) return
+    nudge.current = null
+    finishTransform()
+  }, [finishTransform])
+
+  useEffect(() => {
+    const editable = (target: EventTarget | null) =>
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLTextAreaElement ||
+      (target instanceof HTMLElement && target.isContentEditable)
+    const arrows = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'])
+
+    const down = (event: KeyboardEvent) => {
+      if (!arrows.has(event.key) || editable(event.target)) return
+      if (nudgeSelected(event.key, event.shiftKey)) event.preventDefault()
+    }
+    const up = (event: KeyboardEvent) => {
+      if (arrows.has(event.key)) finishNudge()
+    }
+
+    window.addEventListener('keydown', down)
+    window.addEventListener('keyup', up)
+    return () => {
+      window.removeEventListener('keydown', down)
+      window.removeEventListener('keyup', up)
+    }
+  }, [finishNudge, nudgeSelected])
 
   const moveGesture = (
     pointer: number,

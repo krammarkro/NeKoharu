@@ -523,6 +523,47 @@ describe('canvas interaction adapter', () => {
     )
   })
 
+  it('nudges a selected text layer with arrow keys', async () => {
+    installProject()
+    queryClient.setQueryData(pageKey, (page: { layers: Layer[] }) => ({
+      ...page,
+      layers: [textLayer],
+    }))
+    useKoharuStore.setState({
+      selectedLayers: [textLayer.id],
+      layerFrames: {
+        [textLayer.id]: { x: 30, y: 40, width: 50, height: 20, angle_degrees: 0 },
+      },
+    })
+    const commit = vi.spyOn(commands, 'commitTransform').mockResolvedValue(2)
+    renderWorkspace()
+
+    fireEvent.keyDown(window, { key: 'ArrowRight' })
+    fireEvent.keyDown(window, { key: 'ArrowDown', shiftKey: true })
+    fireEvent.keyUp(window, { key: 'ArrowDown' })
+
+    await waitFor(() => expect(commit).toHaveBeenCalledOnce())
+    expect(canvas.beginTransform).toHaveBeenCalledWith([
+      {
+        element: textLayer.id,
+        frame: { x: 30, y: 40, width: 50, height: 20, angle_degrees: 0 },
+      },
+    ])
+    expect(canvas.updateTransform).toHaveBeenCalledWith([
+      {
+        element: textLayer.id,
+        frame: { x: 31, y: 50, width: 50, height: 20, angle_degrees: 0 },
+      },
+    ])
+    expect(canvas.finishTransform).toHaveBeenCalledOnce()
+    expect(commit).toHaveBeenCalledWith(1, [
+      {
+        element: textLayer.id,
+        frame: { x: 31, y: 50, width: 50, height: 20, angle_degrees: 0 },
+      },
+    ])
+  })
+
   it('shows the automatic region behind the selected text controls', () => {
     installProject()
     queryClient.setQueryData(pageKey, (page: { layers: Layer[] }) => ({
