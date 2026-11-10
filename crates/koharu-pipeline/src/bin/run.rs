@@ -75,6 +75,8 @@ enum OcrChoice {
     BaberuOcr,
     #[value(name = "hayai-ocr")]
     HayaiOcr,
+    #[value(name = "pp-ocrv6-medium-rec-cyrillic")]
+    PpOcrV6MediumRecCyrillic,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -104,6 +106,7 @@ impl Arguments {
                 OcrChoice::MangaOcr => OcrModel::MangaOcr,
                 OcrChoice::BaberuOcr => OcrModel::BaberuOcr,
                 OcrChoice::HayaiOcr => OcrModel::HayaiOcr,
+                OcrChoice::PpOcrV6MediumRecCyrillic => OcrModel::PpOcrV6MediumRecCyrillic,
             },
             translation: TranslationConfig {
                 model: ModelSelection {

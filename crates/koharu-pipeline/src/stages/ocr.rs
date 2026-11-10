@@ -8,6 +8,7 @@ use image::DynamicImage;
 use koharu_ml::{
     baberu_ocr::BaberuOcr, hayai_ocr::HayaiOcr, manga_ocr::MangaOcr,
     paddle_ocr_vl::PaddleOCRVLTask, paddle_ocr_vl_quantized::PaddleOCRVLQuantized,
+    pp_ocr_v6::rec::PPOCRV6MediumRecCyrillic,
 };
 use koharu_scene::{
     Authored, EntityId, Geometry, LanguageTag, OcrAnalysis, Origin, RecognizedFrom, Region,
@@ -40,6 +41,7 @@ impl StageProcessor for Processor {
             OcrModel::BaberuOcr => "baberu-ocr",
             OcrModel::HayaiOcr => "hayai-ocr",
             OcrModel::PaddleOcrVl1_6 => "paddleocr-vl-1.6",
+            OcrModel::PpOcrV6MediumRecCyrillic => "pp-ocrv6-medium-rec-cyrillic",
         }
     }
 
@@ -69,6 +71,7 @@ enum Model {
     Baberu(Arc<Mutex<BaberuOcr>>),
     Hayai(Arc<Mutex<HayaiOcr>>),
     Paddle(Arc<Mutex<PaddleOCRVLQuantized>>),
+    PpOcrV6MediumRecCyrillic(Arc<Mutex<PPOCRV6MediumRecCyrillic>>),
 }
 
 impl Model {
@@ -86,6 +89,9 @@ impl Model {
             OcrModel::PaddleOcrVl1_6 => Ok(Self::Paddle(Arc::new(Mutex::new(
                 PaddleOCRVLQuantized::load(device).await?,
             )))),
+            OcrModel::PpOcrV6MediumRecCyrillic => Ok(Self::PpOcrV6MediumRecCyrillic(Arc::new(
+                Mutex::new(PPOCRV6MediumRecCyrillic::load(device).await?),
+            ))),
         }
     }
 
@@ -95,6 +101,7 @@ impl Model {
             Self::Baberu(_) => "baberu-ocr",
             Self::Hayai(_) => "hayai-ocr",
             Self::Paddle(_) => "paddleocr-vl-1.6",
+            Self::PpOcrV6MediumRecCyrillic(_) => "pp-ocrv6-medium-rec-cyrillic",
         };
         let page = input.page;
         let mut targets = Vec::new();
@@ -162,6 +169,12 @@ impl Model {
             Self::Paddle(model) => {
                 infer_text(model.clone(), targets, |model, image| {
                     Ok(model.inference(image, PaddleOCRVLTask::Ocr)?.text)
+                })
+                .await?
+            }
+            Self::PpOcrV6MediumRecCyrillic(model) => {
+                infer_text(model.clone(), targets, |model, image| {
+                    Ok(model.inference(image)?.text)
                 })
                 .await?
             }
