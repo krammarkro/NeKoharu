@@ -2,7 +2,7 @@ mod config;
 mod model;
 mod processor;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use image::DynamicImage;
 use koharu_torch::Device;
 
@@ -27,6 +27,9 @@ pub struct PPOCRV6MediumRec {
     model: Model,
     processor: PPOCRV6MediumRecImageProcessor,
 }
+
+#[derive(Debug)]
+pub struct PPOCRV6MediumRecCyrillic;
 
 impl PPOCRV6MediumRec {
     pub async fn load(device: crate::Device) -> Result<Self> {
@@ -73,6 +76,18 @@ impl PPOCRV6MediumRec {
             let probabilities = self.model.forward(&pixel_values);
             self.processor.postprocess(&probabilities)
         })
+    }
+}
+
+impl PPOCRV6MediumRecCyrillic {
+    pub async fn load(_device: crate::Device) -> Result<Self> {
+        bail!(
+            "Metrika PP-OCRv6 Cyrillic weights use Paddle's inference format, which Koharu's safetensors recognizer cannot load"
+        )
+    }
+
+    pub fn inference(&self, _image: &DynamicImage) -> Result<TextRecognition> {
+        bail!("Metrika PP-OCRv6 Cyrillic weights are not supported")
     }
 }
 

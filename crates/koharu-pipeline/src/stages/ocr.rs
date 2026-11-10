@@ -9,6 +9,7 @@ use koharu_ml::{
     baberu_ocr::BaberuOcr, hayai_ocr::HayaiOcr, manga_ocr::MangaOcr,
     paddle_ocr_vl::PaddleOCRVLTask, paddle_ocr_vl_quantized::PaddleOCRVLQuantized,
     pp_ocr_v5_cyrillic::PPOCRv5Cyrillic,
+    pp_ocr_v6::rec::PPOCRV6MediumRecCyrillic,
 };
 use koharu_scene::{
     Authored, EntityId, Geometry, LanguageTag, OcrAnalysis, Origin, RecognizedFrom, Region,
@@ -42,6 +43,7 @@ impl StageProcessor for Processor {
             OcrModel::HayaiOcr => "hayai-ocr",
             OcrModel::PaddleOcrVl1_6 => "paddleocr-vl-1.6",
             OcrModel::PpOcrV5Cyrillic => "pp-ocrv5-cyrillic",
+            OcrModel::PpOcrV6MediumRecCyrillic => "pp-ocrv6-medium-rec-cyrillic",
         }
     }
 
@@ -72,6 +74,7 @@ enum Model {
     Hayai(Arc<Mutex<HayaiOcr>>),
     Paddle(Arc<Mutex<PaddleOCRVLQuantized>>),
     PpOcrV5Cyrillic(Arc<Mutex<PPOCRv5Cyrillic>>),
+    PpOcrV6MediumRecCyrillic(Arc<Mutex<PPOCRV6MediumRecCyrillic>>),
 }
 
 impl Model {
@@ -92,6 +95,9 @@ impl Model {
             OcrModel::PpOcrV5Cyrillic => Ok(Self::PpOcrV5Cyrillic(Arc::new(Mutex::new(
                 PPOCRv5Cyrillic::load(device).await?,
             )))),
+            OcrModel::PpOcrV6MediumRecCyrillic => Ok(Self::PpOcrV6MediumRecCyrillic(Arc::new(
+                Mutex::new(PPOCRV6MediumRecCyrillic::load(device).await?),
+            ))),
         }
     }
 
@@ -102,6 +108,7 @@ impl Model {
             Self::Hayai(_) => "hayai-ocr",
             Self::Paddle(_) => "paddleocr-vl-1.6",
             Self::PpOcrV5Cyrillic(_) => "pp-ocrv5-cyrillic",
+            Self::PpOcrV6MediumRecCyrillic(_) => "pp-ocrv6-medium-rec-cyrillic",
         };
         let page = input.page;
         let mut targets = Vec::new();
@@ -178,11 +185,18 @@ impl Model {
                 })
                 .await?
             }
+            Self::PpOcrV6MediumRecCyrillic(model) => {
+                infer_text(model.clone(), targets, |model, image| {
+                    Ok(model.inference(image)?.text)
+                })
+                .await?
+            }
         };
 
         let generation = generation(PRODUCER, model_name)?;
         let fallback_language = match self {
             Self::PpOcrV5Cyrillic(_) => "ru-RU",
+            Self::PpOcrV6MediumRecCyrillic(_) => "ru-RU",
             _ => "ja-JP",
         };
         let mut edit = input.scene.edit_as(generation.clone());

@@ -374,7 +374,7 @@ export type ModelSelection = {
 	reasoning?: boolean,
 };
 
-export type OcrModel = { model: "paddleocr-vl-1.6" } | { model: "pp-ocrv5-cyrillic" } | { model: "manga-ocr" } | { model: "baberu-ocr" } | { model: "hayai-ocr" };
+export type OcrModel = { model: "paddleocr-vl-1.6" } | { model: "pp-ocrv5-cyrillic" } | { model: "manga-ocr" } | { model: "baberu-ocr" } | { model: "hayai-ocr" } | { model: "pp-ocrv6-medium-rec-cyrillic" };
 
 export type OpenAiCompatibleConfig = {
 	base_url?: string | null,
