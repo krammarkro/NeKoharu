@@ -42,6 +42,26 @@ pub(crate) async fn translate(
     generation: &GenerationConfig,
     request: &TranslationRequest,
 ) -> Result<Vec<String>> {
+    let result = translate_once(client, providers, selection, generation, request).await;
+    match result {
+        Err(error) if is_empty_json_parse_error(&error) => {
+            tracing::warn!(
+                provider = %selection.provider,
+                "retrying translation after an empty JSON response"
+            );
+            translate_once(client, providers, selection, generation, request).await
+        }
+        result => result,
+    }
+}
+
+async fn translate_once(
+    client: &Client,
+    providers: &ProvidersConfig,
+    selection: &ModelSelection,
+    generation: &GenerationConfig,
+    request: &TranslationRequest,
+) -> Result<Vec<String>> {
     let model = || {
         selection
             .model
@@ -90,6 +110,30 @@ pub(crate) async fn translate(
         }
         Provider::Caiyun => caiyun::translate(client, &providers.caiyun, request).await,
         Provider::Local => unreachable!("local translation has its own backend"),
+    }
+}
+
+fn is_empty_json_parse_error(error: &Error) -> bool {
+    let Error::Other(error) = error else {
+        return false;
+    };
+    error
+        .chain()
+        .any(|cause| cause.to_string().contains("expected value at line 1 column 1"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retries_only_empty_json_parse_failures() {
+        assert!(is_empty_json_parse_error(&Error::Other(anyhow::anyhow!(
+            "invalid translation JSON: expected value at line 1 column 1"
+        ))));
+        assert!(!is_empty_json_parse_error(&Error::Other(anyhow::anyhow!(
+            "invalid translation JSON: trailing characters at line 1 column 2"
+        ))));
     }
 }
 
