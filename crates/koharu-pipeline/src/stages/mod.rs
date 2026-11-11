@@ -158,6 +158,13 @@ impl Stages {
         self.translation.batch_size()
     }
 
+    pub(crate) fn uses_accelerator(&self, stage: Stage) -> bool {
+        match stage {
+            Stage::Translation => self.translation.uses_accelerator(),
+            Stage::Detection | Stage::Ocr | Stage::Inpainting => true,
+        }
+    }
+
     pub(crate) fn unload(&self, stage: Stage) -> bool {
         self.processor(stage).unload()
     }

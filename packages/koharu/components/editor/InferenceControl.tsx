@@ -36,14 +36,16 @@ export function InferenceControl({
   onRun,
   disabled,
 }: {
-  onRun: (scope: PipelineScope, stages: Stage[]) => void
+  onRun: (scope: PipelineScope, stages: Stage[], skipFinishedPages: boolean) => void
   disabled: boolean
 }) {
   const { t } = useTranslation()
   const scope = useKoharuStore((state) => state.processingScope)
   const stages = useKoharuStore((state) => state.processingStages)
+  const skipFinishedPages = useKoharuStore((state) => state.skipFinishedPages)
   const setScope = useKoharuStore((state) => state.setProcessingScope)
   const setStages = useKoharuStore((state) => state.setProcessingStages)
+  const setSkipFinishedPages = useKoharuStore((state) => state.setSkipFinishedPages)
   const jobs = useKoharuStore((state) => state.jobs)
   const selectedPages = useKoharuStore((state) => state.selectedPages)
   const running = Object.values(jobs).find((job) => job.state === 'running') ?? null
@@ -63,6 +65,8 @@ export function InferenceControl({
         running={Boolean(running)}
         onScopeChange={setScope}
         onStagesChange={setStages}
+        skipFinishedPages={skipFinishedPages}
+        onSkipFinishedPagesChange={setSkipFinishedPages}
       />
 
       <Button
@@ -74,7 +78,7 @@ export function InferenceControl({
         )}
         disabled={(disabled || unavailable) && !running}
         aria-label={running ? t('inference.stopProcessing') : t('inference.runProcessing')}
-        onClick={running ? stop : () => onRun(scope, stages)}
+        onClick={running ? stop : () => onRun(scope, stages, skipFinishedPages)}
       >
         {running ? <Square className='size-3 fill-current' /> : <Play className='size-3' />}
         <span>{running ? t('inference.stop') : t('inference.run')}</span>
@@ -90,6 +94,8 @@ function RuntimeSelector({
   running,
   onScopeChange,
   onStagesChange,
+  skipFinishedPages,
+  onSkipFinishedPagesChange,
 }: {
   scope: PipelineScope
   stages: Stage[]
@@ -97,6 +103,8 @@ function RuntimeSelector({
   running: boolean
   onScopeChange: (scope: PipelineScope) => void
   onStagesChange: (stages: Stage[]) => void
+  skipFinishedPages: boolean
+  onSkipFinishedPagesChange: (skip: boolean) => void
 }) {
   const { t } = useTranslation()
   const [open, setOpen] = useState(false)
@@ -233,6 +241,17 @@ function RuntimeSelector({
               }
               onClick={() => setView('stages')}
             />
+            {scope === 'project' && (
+              <SelectorRow
+                label={t('inference.skipFinishedPages')}
+                value={
+                  skipFinishedPages
+                    ? t('inference.enabled')
+                    : t('inference.disabled')
+                }
+                onClick={() => onSkipFinishedPagesChange(!skipFinishedPages)}
+              />
+            )}
             <SelectorRow
               label={t('inference.output')}
               value={outputLabel}

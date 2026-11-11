@@ -71,7 +71,27 @@ fn decode(path: &Path, source: EncodedPage) -> Result<Page> {
     })
 }
 
-pub(super) fn import(mut paths: Vec<PathBuf>) -> Result<Vec<Page>> {
+fn raster_name(path: &Path, folder: Option<&Path>) -> String {
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "page".to_owned());
+    let Some(folder) = folder else {
+        return file_name;
+    };
+    let Some(parent) = path.parent() else {
+        return file_name;
+    };
+    if parent == folder {
+        return file_name;
+    }
+    parent
+        .file_name()
+        .map(|name| format!("{}_{}", name.to_string_lossy(), file_name))
+        .unwrap_or(file_name)
+}
+
+pub(super) fn import(mut paths: Vec<PathBuf>, folder: Option<&Path>) -> Result<Vec<Page>> {
     alphanumeric_sort::sort_slice_by_os_str_key(&mut paths, |path| {
         path.file_name().unwrap_or_else(|| path.as_os_str())
     });
@@ -84,10 +104,7 @@ pub(super) fn import(mut paths: Vec<PathBuf>) -> Result<Vec<Page>> {
                 .and_then(|extension| extension.parse::<Format>().ok());
             let encoded = match extension {
                 Some(Format::Raster) => vec![EncodedPage {
-                    name: path
-                        .file_name()
-                        .map(|name| name.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| "page".to_owned()),
+                    name: raster_name(&path, folder),
                     bytes: fs::read(&path)
                         .with_context(|| format!("failed to read {}", path.display()))?,
                 }],
@@ -135,7 +152,7 @@ mod tests {
             fs::write(path, encoded.get_ref()).expect("write fixture");
         }
 
-        let pages = import(paths.into()).expect("import fixtures");
+        let pages = import(paths.into(), None).expect("import fixtures");
         fs::remove_dir_all(&directory).expect("remove fixture directory");
         assert_eq!(
             pages
@@ -143,6 +160,19 @@ mod tests {
                 .map(|page| page.name.as_str())
                 .collect::<Vec<_>>(),
             ["page1.png", "page2.png", "page10.PNG"]
+        );
+    }
+
+    #[test]
+    fn prefixes_raster_names_with_their_subfolder() {
+        let folder = Path::new("book");
+        assert_eq!(
+            raster_name(Path::new("book/chapter 1/page01.png"), Some(folder)),
+            "chapter 1_page01.png"
+        );
+        assert_eq!(
+            raster_name(Path::new("book/page01.png"), Some(folder)),
+            "page01.png"
         );
     }
 }

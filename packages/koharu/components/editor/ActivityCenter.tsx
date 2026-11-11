@@ -123,16 +123,30 @@ function JobItem({ job }: { job: Job }) {
     )
   }
   const percent = progress(job.completed, job.total)
+  const activeStages = job.active_stages.length
+    ? job.active_stages
+    : job.stage
+      ? [{ stage: job.stage, page: job.page, model: job.model }]
+      : []
   return (
     <div className='border-b p-3 last:border-b-0'>
       <div className='grid grid-cols-[1rem_minmax(0,1fr)_2.25rem_1.5rem] items-start gap-x-2.5'>
         <span className='mt-1.5 size-1.5 justify-self-center rounded-full bg-primary' />
         <div className='min-w-0'>
-          <span className='block truncate text-[12px] font-medium capitalize'>
-            {job.stage
-              ? t(`phase.${job.stage}`, { defaultValue: job.stage })
-              : t('activity.processing')}
-          </span>
+          {activeStages.length ? (
+            activeStages.map((activeStage) => (
+              <span
+                key={activeStage.stage}
+                className='block truncate text-[12px] font-medium capitalize'
+              >
+                {t(`phase.${activeStage.stage}`, { defaultValue: activeStage.stage })}
+              </span>
+            ))
+          ) : (
+            <span className='block truncate text-[12px] font-medium capitalize'>
+              {t('activity.processing')}
+            </span>
+          )}
         </div>
         <span className='pt-0.5 text-right text-[10px] tabular-nums'>
           {percent !== null ? `${percent}%` : null}

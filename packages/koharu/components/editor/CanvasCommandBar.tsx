@@ -13,7 +13,7 @@ export function CanvasCommandBar() {
   const jobs = useKoharuStore((state) => state.jobs)
   const running = Object.values(jobs).find((job) => job.state === 'running')
 
-  const run = (selection: PipelineScope, stages: Stage[]) => {
+  const run = (selection: PipelineScope, stages: Stage[], skipFinished: boolean) => {
     if (!page) return
     const scope: Scope =
       selection === 'project'
@@ -27,7 +27,9 @@ export function CanvasCommandBar() {
         : stages.length === 1
           ? ({ operation: 'only', stage: stages[0]! } as const)
           : ({ operation: 'stages', stages } as const)
-    void call(commands.process, scope, operation).catch(() => undefined)
+    void call(commands.process, scope, operation, selection === 'project' && skipFinished).catch(
+      () => undefined,
+    )
   }
 
   return (

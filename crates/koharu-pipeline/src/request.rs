@@ -74,6 +74,7 @@ impl Operation {
 pub struct Request {
     pub operation: Operation,
     pub scope: Scope,
+    pub skip_finished_pages: bool,
     pub stop: StopToken,
     pub progress: Option<ProgressSink>,
     pub inpainting_mask: Option<InpaintingMask>,
@@ -85,6 +86,7 @@ impl Default for Request {
         Self {
             operation: Operation::Full,
             scope: Scope::Project,
+            skip_finished_pages: false,
             stop: StopToken::default(),
             progress: None,
             inpainting_mask: None,

@@ -197,6 +197,7 @@ async fn main() -> Result<()> {
             Request {
                 operation: Operation::Full,
                 scope: Scope::Pages(vec![page]),
+                skip_finished_pages: false,
                 progress: Some(Arc::new(|event| {
                     if let Progress::Finished { stage, elapsed, .. } = event {
                         eprintln!("{stage} finished in {:.2}s", elapsed.as_secs_f64());

@@ -73,7 +73,14 @@ impl StageRunner {
         if skip {
             return Ok(StageOutcome::Skipped);
         }
-        let permit = self.accelerator.acquire().await;
+        let permit = self
+            .stages
+            .uses_accelerator(job.stage)
+            .then(|| self.accelerator.acquire());
+        let permit = match permit {
+            Some(future) => Some(future.await),
+            None => None,
+        };
         if job.stop.stopped() {
             return Ok(StageOutcome::Stopped);
         }

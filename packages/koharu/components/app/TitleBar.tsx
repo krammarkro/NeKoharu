@@ -25,6 +25,7 @@ import { useKoharuStore } from '@/lib/store'
 import { commands, type Operation, type Scope, type Stage } from '@koharu/bridge/protocol'
 import {
   Menubar,
+  MenubarCheckboxItem,
   MenubarContent as UiMenubarContent,
   MenubarItem as UiMenubarItem,
   MenubarMenu,
@@ -48,6 +49,8 @@ export function TitleBar() {
   const page = project ? (pageQuery.data ?? null) : null
   const selectedPages = useKoharuStore((state) => state.selectedPages)
   const selectedLayers = useKoharuStore((state) => state.selectedLayers)
+  const skipFinishedPages = useKoharuStore((state) => state.skipFinishedPages)
+  const setSkipFinishedPages = useKoharuStore((state) => state.setSkipFinishedPages)
   const selectLayers = useKoharuStore((state) => state.selectLayers)
   const setSettingsOpen = useKoharuStore((state) => state.setSettingsOpen)
   const requestCanvasFit = useKoharuStore((state) => state.requestCanvasFit)
@@ -59,7 +62,7 @@ export function TitleBar() {
   )
 
   const run = (scope: Scope, operation: Operation = { operation: 'full' }) =>
-    void call(commands.process, scope, operation).catch(() => undefined)
+    void call(commands.process, scope, operation, false).catch(() => undefined)
 
   const closeProject = () => void call(commands.closeProject).catch(() => undefined)
 
@@ -204,6 +207,13 @@ export function TitleBar() {
           <MenubarMenu>
             <MenubarTrigger>{t('menu.process')}</MenubarTrigger>
             <MenubarContent>
+              <MenubarCheckboxItem
+                checked={skipFinishedPages}
+                onCheckedChange={setSkipFinishedPages}
+              >
+                {t('inference.skipFinishedPages')}
+              </MenubarCheckboxItem>
+              <MenubarSeparator />
               <MenubarItem
                 disabled={!project || pages.length === 0}
                 onClick={() => run({ scope: 'project' })}

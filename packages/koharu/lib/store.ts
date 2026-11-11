@@ -78,6 +78,7 @@ interface KoharuStore {
   inspector: InspectorSection
   processingScope: PipelineScope
   processingStages: Stage[]
+  skipFinishedPages: boolean
   settingsOpen: boolean
   sidebarPanel: SidebarPanel
   shortcuts: Shortcuts
@@ -86,6 +87,7 @@ interface KoharuStore {
   showInspector: (section: InspectorSection) => void
   setProcessingScope: (scope: PipelineScope) => void
   setProcessingStages: (stages: Stage[]) => void
+  setSkipFinishedPages: (skip: boolean) => void
   setSettingsOpen: (open: boolean) => void
   setSidebarPanel: (panel: SidebarPanel) => void
   selectLayers: (layers: EntityId[]) => void
@@ -137,6 +139,7 @@ export const useKoharuStore = create<KoharuStore>()((set) => ({
   inspector: 'copy',
   processingScope: 'selected-pages',
   processingStages: [...pipelineStages],
+  skipFinishedPages: false,
   settingsOpen: false,
   sidebarPanel: 'properties',
   shortcuts: defaultShortcuts,
@@ -145,6 +148,7 @@ export const useKoharuStore = create<KoharuStore>()((set) => ({
   showInspector: (inspector) => set({ inspector }),
   setProcessingScope: (processingScope) => set({ processingScope }),
   setProcessingStages: (processingStages) => set({ processingStages }),
+  setSkipFinishedPages: (skipFinishedPages) => set({ skipFinishedPages }),
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
   setSidebarPanel: (sidebarPanel) => set({ sidebarPanel }),
   selectLayers: (selectedLayers) => set({ selectedLayers: [...new Set(selectedLayers)] }),

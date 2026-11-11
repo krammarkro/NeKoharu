@@ -168,6 +168,7 @@ impl KoharuHost {
         let request = koharu_pipeline::Request {
             operation,
             scope,
+            skip_finished_pages: false,
             stop,
             progress: None,
             inpainting_mask: None,

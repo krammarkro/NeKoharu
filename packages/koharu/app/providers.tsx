@@ -41,6 +41,7 @@ export function Providers({ children }: { children: ReactNode }) {
     if (!lifecycle.bound) {
       lifecycle.bound = true
       const completed = new Map<string, number>()
+      const terminalJobs = new Set<string>()
       const channel = <T,>(receive: (value: T) => void) =>
         new Channel<T>((value) => {
           if (lifecycle.active) receive(value)
@@ -55,6 +56,10 @@ export function Providers({ children }: { children: ReactNode }) {
             const previous = completed.get(job.id) ?? 0
             completed.set(job.id, job.completed)
             receiveJob(job)
+            if (job.state !== 'running' && !terminalJobs.has(job.id)) {
+              terminalJobs.add(job.id)
+              playPipelineStatusSound(job.state)
+            }
             if (job.completed > previous || job.state !== 'running') {
               void refresh(projectKey, pagesKey, pageKey).catch(() => undefined)
             }
@@ -120,6 +125,37 @@ export function Providers({ children }: { children: ReactNode }) {
       </I18nextProvider>
     </QueryClientProvider>
   )
+}
+
+function playPipelineStatusSound(state: Job['state']): void {
+  const AudioContext = window.AudioContext
+  if (!AudioContext) return
+
+  const context = new AudioContext()
+  const oscillator = context.createOscillator()
+  const gain = context.createGain()
+  const now = context.currentTime
+  const frequencies =
+    state === 'finished'
+      ? [660, 880]
+      : state === 'stopped'
+        ? [440]
+        : [330, 220]
+
+  oscillator.type = 'sine'
+  oscillator.frequency.setValueAtTime(frequencies[0]!, now)
+  for (const [index, frequency] of frequencies.entries()) {
+    oscillator.frequency.setValueAtTime(frequency, now + index * 0.12)
+  }
+  gain.gain.setValueAtTime(0.0001, now)
+  gain.gain.exponentialRampToValueAtTime(0.08, now + 0.01)
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + frequencies.length * 0.12 + 0.12)
+  oscillator.connect(gain)
+  gain.connect(context.destination)
+  oscillator.start(now)
+  oscillator.stop(now + frequencies.length * 0.12 + 0.14)
+  oscillator.addEventListener('ended', () => void context.close(), { once: true })
+  void context.resume().catch(() => void context.close())
 }
 
 function StartupBoundary({ children }: { children: ReactNode }) {

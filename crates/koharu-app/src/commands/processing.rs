@@ -47,7 +47,15 @@ pub struct Job {
     pub page: Option<koharu_scene::EntityId>,
     pub stage: Option<koharu_pipeline::Stage>,
     pub model: Option<String>,
+    pub active_stages: Vec<JobStage>,
     pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Type)]
+pub struct JobStage {
+    pub stage: koharu_pipeline::Stage,
+    pub page: Option<koharu_scene::EntityId>,
+    pub model: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Type)]
@@ -79,6 +87,7 @@ pub(crate) async fn process(
     handle: AppHandle<CefRuntime>,
     scope: koharu_pipeline::Scope,
     operation: koharu_pipeline::Operation,
+    skip_finished_pages: bool,
     project: State<'_, CurrentProject>,
     processing: State<'_, Processing>,
     job_channel: State<'_, JobChannel>,
@@ -107,6 +116,7 @@ pub(crate) async fn process(
         page: None,
         stage: None,
         model: None,
+        active_stages: Vec::new(),
         error: None,
     };
     processing.jobs.lock().insert(id, job.clone());
@@ -117,11 +127,19 @@ pub(crate) async fn process(
     let inpainting_mask = processing.inpainting_mask.lock().take();
     let text_box = processing.text_box.lock().take();
     drop(tokio::spawn(async move {
-        let progress = Arc::new(Mutex::new((0_usize, 0_usize)));
+        #[derive(Default)]
+        struct ProgressState {
+            completed: usize,
+            total: usize,
+            active_stages: std::collections::BTreeMap<koharu_pipeline::Stage, JobStage>,
+        }
+
+        let progress = Arc::new(Mutex::new(ProgressState::default()));
         let progress_handle = task_handle.clone();
         let mut request = koharu_pipeline::Request {
             operation,
             scope,
+            skip_finished_pages,
             stop: stop.clone(),
             progress: None,
             inpainting_mask,
@@ -131,28 +149,79 @@ pub(crate) async fn process(
             let update = match event {
                 Progress::Started { pages, stages } => {
                     let mut progress = progress.lock();
-                    *progress = (0, pages.len().saturating_mul(stages.len()));
-                    Some((0, progress.1, None, None, None))
+                    progress.completed = 0;
+                    progress.total = pages.len().saturating_mul(stages.len());
+                    progress.active_stages.clear();
+                    Some((0, progress.total, None, None, None, Vec::new()))
                 }
                 Progress::Loading { page, stage, model } => {
-                    let progress = progress.lock();
-                    Some((progress.0, progress.1, Some(page), Some(stage), Some(model)))
+                    let mut progress = progress.lock();
+                    progress.active_stages.insert(
+                        stage,
+                        JobStage {
+                            stage,
+                            page: Some(page),
+                            model: Some(model.clone()),
+                        },
+                    );
+                    Some((
+                        progress.completed,
+                        progress.total,
+                        Some(page),
+                        Some(stage),
+                        Some(model),
+                        progress.active_stages.values().cloned().collect(),
+                    ))
                 }
                 Progress::Finished {
                     page, stage, model, ..
                 } => {
                     let mut progress = progress.lock();
-                    progress.0 = progress.0.saturating_add(1).min(progress.1);
-                    Some((progress.0, progress.1, Some(page), Some(stage), Some(model)))
+                    progress.completed = progress.completed.saturating_add(1).min(progress.total);
+                    progress.active_stages.remove(&stage);
+                    Some((
+                        progress.completed,
+                        progress.total,
+                        Some(page),
+                        Some(stage),
+                        Some(model),
+                        progress.active_stages.values().cloned().collect(),
+                    ))
                 }
                 Progress::Skipped { page, stage } => {
                     let mut progress = progress.lock();
-                    progress.0 = progress.0.saturating_add(1).min(progress.1);
-                    Some((progress.0, progress.1, Some(page), Some(stage), None))
+                    progress.completed = progress.completed.saturating_add(1).min(progress.total);
+                    progress.active_stages.remove(&stage);
+                    Some((
+                        progress.completed,
+                        progress.total,
+                        Some(page),
+                        Some(stage),
+                        None,
+                        progress.active_stages.values().cloned().collect(),
+                    ))
                 }
-                Progress::Running { .. } => None,
+                Progress::Running { page, stage, model } => {
+                    let mut progress = progress.lock();
+                    progress.active_stages.insert(
+                        stage,
+                        JobStage {
+                            stage,
+                            page: Some(page),
+                            model: Some(model.clone()),
+                        },
+                    );
+                    Some((
+                        progress.completed,
+                        progress.total,
+                        Some(page),
+                        Some(stage),
+                        Some(model),
+                        progress.active_stages.values().cloned().collect(),
+                    ))
+                }
             };
-            if let Some((completed, total, page, stage, model)) = update {
+            if let Some((completed, total, page, stage, model, active_stages)) = update {
                 let job = {
                     let processing = progress_handle.state::<Processing>();
                     let mut jobs = processing.jobs.lock();
@@ -162,12 +231,14 @@ pub(crate) async fn process(
                         job.page = page;
                         job.stage = stage;
                         job.model = model;
+                        job.active_stages = active_stages;
                         job.clone()
                     })
                 };
                 if let Some(job) = job {
                     progress_handle.state::<JobChannel>().channel.publish(job);
                 }
+
             }
         }));
 

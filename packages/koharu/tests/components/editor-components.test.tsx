@@ -1794,11 +1794,14 @@ describe('greenfield editor', () => {
     fireEvent.click(screen.getByRole('button', { name: /Stages 4 stages/ }))
     fireEvent.click(screen.getByRole('button', { name: /Translation/ }))
     fireEvent.click(screen.getByRole('button', { name: /Inpainting/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }))
+    fireEvent.click(screen.getByRole('button', { name: /Skip finished pages/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Run processing' }))
     await waitFor(() =>
       expect(run).toHaveBeenLastCalledWith(
         { scope: 'project' },
         { operation: 'stages', stages: ['detection', 'ocr'] },
+        true,
       ),
     )
 
@@ -1813,6 +1816,7 @@ describe('greenfield editor', () => {
       expect(run).toHaveBeenLastCalledWith(
         { scope: 'pages', value: ['page'] },
         { operation: 'full' },
+        false,
       ),
     )
   })
@@ -1827,6 +1831,7 @@ describe('greenfield editor', () => {
       expect(run).toHaveBeenLastCalledWith(
         { scope: 'pages', value: ['page'] },
         { operation: 'full' },
+        false,
       ),
     )
 
@@ -2669,6 +2674,10 @@ describe('greenfield editor', () => {
           page: 'page',
           stage: 'ocr',
           model: 'manga-ocr',
+          active_stages: [
+            { stage: 'ocr', page: 'page', model: 'manga-ocr' },
+            { stage: 'translation', page: 'page', model: 'OpenAI' },
+          ],
           error: null,
         },
       },
@@ -2688,6 +2697,7 @@ describe('greenfield editor', () => {
     const stop = vi.spyOn(commands, 'stopJob').mockResolvedValue(null)
     render(<ActivityCenter />)
     expect(screen.getByText('25%')).toBeInTheDocument()
+    expect(screen.getByText('Translation')).toBeInTheDocument()
     // Separate elements, so a long label truncates without taking the model.
     expect(screen.getByText('Page 1: cover.png')).toBeInTheDocument()
     expect(screen.getByText('manga-ocr')).toBeInTheDocument()

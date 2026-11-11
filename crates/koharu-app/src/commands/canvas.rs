@@ -222,6 +222,7 @@ pub(crate) async fn add_ocr_box(
                 koharu_pipeline::Stage::Translation,
             ],
         },
+        false,
         handle.state::<CurrentProject>(),
         handle.state::<Processing>(),
         handle.state::<JobChannel>(),
@@ -295,6 +296,7 @@ pub(crate) async fn clean_ocr_box(
                 koharu_pipeline::Stage::Inpainting,
             ],
         },
+        false,
         handle.state::<CurrentProject>(),
         handle.state::<Processing>(),
         handle.state::<JobChannel>(),
@@ -473,6 +475,7 @@ pub(crate) async fn commit_inpaint(
             koharu_pipeline::Operation::Only {
                 stage: koharu_pipeline::Stage::Inpainting,
             },
+            false,
             handle.state::<CurrentProject>(),
             handle.state::<Processing>(),
             handle.state::<JobChannel>(),

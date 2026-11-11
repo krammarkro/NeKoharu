@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{Context as _, Result, ensure};
 use futures::{StreamExt as _, stream::FuturesUnordered};
-use koharu_scene::{EntityId, Snapshot};
+use koharu_scene::{EntityId, RegionSpec, Snapshot};
 
 use crate::{
     Committer, ErrorKind, PipelineError, Progress, ProgressSink, Report, Request, RunStatus, Stage,
@@ -60,7 +60,22 @@ impl<'a> Execution<'a> {
             request.inpainting_mask.is_some(),
         )
         .map_err(|error| PipelineError::new(ErrorKind::InvalidInput, None, error))?;
-        let pages = scope.pages().to_vec();
+        let mut pages = Vec::new();
+        for page in scope.pages() {
+            let finished = request.skip_finished_pages
+                && stages
+                    .iter()
+                    .map(|stage| runner_is_finished(&snapshot, *page, *stage))
+                    .collect::<anyhow::Result<Vec<_>>>()
+                    .map_err(|error| {
+                        PipelineError::new(ErrorKind::InvalidInput, None, error)
+                    })?
+                    .into_iter()
+                    .all(|finished| finished);
+            if !finished {
+                pages.push(*page);
+            }
+        }
         let translation_batch_size = if stages.contains(&Stage::Translation) {
             runner.translation_batch_size()
         } else {
@@ -75,6 +90,7 @@ impl<'a> Execution<'a> {
                 anyhow::anyhow!("the inpainting mask page is outside the inpainting scope"),
             ));
         }
+
         if let Some(text_box) = request.text_box.as_ref() {
             let invalid = if request.inpainting_mask.is_some() {
                 Some("a text box cannot be combined with an inpainting mask")
@@ -93,6 +109,111 @@ impl<'a> Execution<'a> {
                     Some(Stage::Detection),
                     anyhow::anyhow!(reason),
                 ));
+            }
+        }
+
+        fn runner_is_finished(snapshot: &Snapshot, page: EntityId, stage: Stage) -> anyhow::Result<bool> {
+            let entities = snapshot
+                .descendants(page)?
+                .map(|entity| entity.id())
+                .collect::<Vec<_>>();
+            match stage {
+                Stage::Detection => {
+                    let regions = entities
+                        .iter()
+                        .filter_map(|entity| {
+                            snapshot
+                                .component::<koharu_scene::Region>(*entity)
+                                .ok()
+                                .flatten()
+                        })
+                        .collect::<Vec<_>>();
+                    Ok(!regions.is_empty()
+                        && regions.iter().all(|region| {
+                            matches!(region.origin, koharu_scene::Origin::Generated(_))
+                        }))
+                }
+                Stage::Ocr => {
+                    let text_regions = entities
+                        .iter()
+                        .filter(|entity| {
+                            snapshot
+                                .component::<koharu_scene::Region>(**entity)
+                                .ok()
+                                .flatten()
+                                .is_some_and(|region| region.kind == koharu_scene::TextRegion::kind())
+                        })
+                        .copied()
+                        .collect::<Vec<_>>();
+                    Ok(text_regions.iter().all(|region| {
+                        let ocr_generated = snapshot
+                            .component::<koharu_scene::OcrAnalysis>(*region)
+                            .ok()
+                            .flatten()
+                            .is_some_and(|analysis| {
+                                matches!(analysis.origin, koharu_scene::Origin::Generated(_))
+                            });
+                        let source_generated = snapshot
+                            .relations_to_as::<koharu_scene::RecognizedFrom>(*region)
+                            .next()
+                            .and_then(|relation| {
+                                snapshot
+                                    .component::<koharu_scene::SourceText>(relation.value().source)
+                                    .ok()
+                                    .flatten()
+                            })
+                            .is_some_and(|source| {
+                                matches!(source.text.origin, koharu_scene::Origin::Generated(_))
+                            });
+                        ocr_generated && source_generated
+                    }))
+                }
+                Stage::Translation => Ok(entities.iter().all(|entity| {
+                    let Some(source) = snapshot
+                        .component::<koharu_scene::SourceText>(*entity)
+                        .ok()
+                        .flatten()
+                    else {
+                        return true;
+                    };
+                    if !matches!(source.text.origin, koharu_scene::Origin::Generated(_))
+                        || source.text.value.trim().is_empty()
+                    {
+                        return true;
+                    }
+                    snapshot
+                        .component::<koharu_scene::Translation>(*entity)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|translation| {
+                            matches!(translation.text.origin, koharu_scene::Origin::Generated(_))
+                        })
+                })),
+                Stage::Inpainting => {
+                    let cleanup = koharu_scene::AssetRole::new("source")?;
+                    let has_bubble = entities.iter().any(|entity| {
+                        snapshot
+                            .component::<koharu_scene::Region>(*entity)
+                            .ok()
+                            .flatten()
+                            .is_some_and(|region| {
+                                region.kind == koharu_scene::BubbleRegion::kind()
+                                    && matches!(region.origin, koharu_scene::Origin::Generated(_))
+                            })
+                    });
+                    let has_cleanup = snapshot.children(page)?.any(|entity| {
+                        snapshot
+                            .component::<koharu_scene::RasterLayer>(entity)
+                            .ok()
+                            .flatten()
+                            .is_some_and(|layer| {
+                                layer.kind == koharu_scene::RasterLayerKind::Cleanup
+                                    && matches!(layer.origin, koharu_scene::Origin::Generated(_))
+                                    && snapshot.asset(entity, &cleanup).ok().flatten().is_some()
+                            })
+                    });
+                    Ok(has_cleanup || !has_bubble)
+                }
             }
         }
         progress::emit(

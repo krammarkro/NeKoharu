@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use koharu_scene::{Authored, LanguageTag, Origin, SourceText, Translation};
-use koharu_translator::{TranslationRequest, Translator};
+use koharu_translator::{Provider, TranslationRequest, Translator};
 
 use crate::TranslationConfig;
 
@@ -25,6 +25,10 @@ impl Processor {
         } else {
             1
         }
+    }
+
+    pub(super) fn uses_accelerator(&self) -> bool {
+        self.config.model.provider == Provider::Local
     }
 
     pub(super) async fn process_batch(

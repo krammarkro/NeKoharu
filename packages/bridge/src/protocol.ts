@@ -45,7 +45,7 @@ export const commands = {
 	pasteTextLayers: (layers: EntityId[], page: EntityId) => __TAURI_INVOKE<EntityId[]>("paste_text_layers", { layers, page }),
 	undo: () => __TAURI_INVOKE<null>("undo"),
 	redo: () => __TAURI_INVOKE<null>("redo"),
-	process: (scope: Scope, operation: Operation) => __TAURI_INVOKE<JobId>("process", { scope, operation }),
+	process: (scope: Scope, operation: Operation, skipFinishedPages: boolean) => __TAURI_INVOKE<JobId>("process", { scope, operation, skipFinishedPages }),
 	stopJob: (job: JobId) => __TAURI_INVOKE<null>("stop_job", { job }),
 	export: (format: ExportFormat, selectedPages: EntityId[] | null) => __TAURI_INVOKE<null>("export", { format, selectedPages }),
 	getThumbnail: (page: EntityId) => __TAURI_INVOKE<ThumbnailBytes>("get_thumbnail", { page }),
@@ -309,7 +309,14 @@ export type Job = {
 	page: EntityId | null,
 	stage: Stage | null,
 	model: string | null,
+	active_stages: JobStage[],
 	error: string | null,
+};
+
+export type JobStage = {
+	stage: Stage,
+	page: EntityId | null,
+	model: string | null,
 };
 
 export type JobId = string;
